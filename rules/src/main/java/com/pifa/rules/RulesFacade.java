@@ -1,7 +1,9 @@
 package com.pifa.rules;
 
 import com.pifa.rules.model.Classification;
+import com.pifa.rules.model.ForecastConfig;
 import com.pifa.rules.model.IngestionConfig;
+import com.pifa.rules.model.PublishCheck;
 import com.pifa.rules.model.ProductStock;
 import com.pifa.rules.model.Violation;
 import java.util.ArrayList;
@@ -34,7 +36,7 @@ import org.kie.internal.io.ResourceFactory;
 public class RulesFacade {
 
     /** Version of the ruleset; stamped on results so they can be explained later. Bump with every DRL change. */
-    public static final String RULESET_VERSION = "0.2.0";
+    public static final String RULESET_VERSION = "0.3.0";
 
     /**
      * Every DRL file in the ruleset, as classpath resource paths. <b>Add new rule files here</b>;
@@ -42,7 +44,9 @@ public class RulesFacade {
      */
     static final List<String> DRL_FILES = List.of(
         "pifa/rules/allocation/strategy/classification.drl",
-        "pifa/rules/ingestion/ingestion.drl");
+        "pifa/rules/ingestion/ingestion.drl",
+        "pifa/rules/forecast/forecast.drl",
+        "pifa/rules/workflow/workflow.drl");
 
     /** Compiled rules. Shared and read-only. */
     private final KieContainer container;
@@ -95,11 +99,38 @@ public class RulesFacade {
      * @return all ERROR and WARNING findings, in no guaranteed order; never null
      */
     public List<Violation> validateIngestion(List<?> facts, IngestionConfig config) {
+        return run(facts, config);
+    }
+
+    /**
+     * Runs the forecast rules ({@code pifa.rules.forecast}): change control for Regional Manager
+     * revisions (BR-VA-05/06) and working-copy limit/spike checks (BR-FC-MAX, BR-FC-SPIKE).
+     *
+     * @param facts  {@code ForecastChange} and/or {@code ForecastCell} facts; may be empty
+     * @param config the limits (change threshold, spike factor, maximum quantity)
+     * @return all ERROR and WARNING findings; never null
+     */
+    public List<Violation> validateForecast(List<?> facts, ForecastConfig config) {
+        return run(facts, config);
+    }
+
+    /**
+     * Runs the publish guard ({@code pifa.rules.workflow}, BR-WF-01).
+     *
+     * @param check what the workflow knows about the cycle
+     * @return ERROR findings that block publishing; empty if publishing is allowed
+     */
+    public List<Violation> checkPublish(PublishCheck check) {
+        return run(List.of(check), null);
+    }
+
+    /** Shared runner: fresh stateless session, findings list as the DRL global, facts (+ optional config) inserted. */
+    private List<Violation> run(List<?> facts, Object config) {
         List<Violation> found = new ArrayList<>();
         StatelessKieSession session = container.newStatelessKieSession();
         session.setGlobal("violations", found);
         List<Object> all = new ArrayList<>(facts);
-        all.add(config); // the config is a fact too, so rules can read the limits
+        if (config != null) all.add(config); // the config is a fact too, so rules can read the limits
         session.execute(all);
         return found;
     }

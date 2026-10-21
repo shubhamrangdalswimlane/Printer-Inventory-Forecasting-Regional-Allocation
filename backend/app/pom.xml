@@ -65,6 +65,11 @@
       <artifactId>postgresql</artifactId>
       <scope>runtime</scope>
     </dependency>
+    <!-- JavaMail support for notification e-mails (sent from the outbox). -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-mail</artifactId>
+    </dependency>
     <!-- Apache POI: reads and writes .xlsx files (ingestion, exports, templates, synthetic data). -->
     <dependency>
       <groupId>org.apache.poi</groupId>

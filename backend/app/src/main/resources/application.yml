@@ -25,6 +25,11 @@ spring:
   flyway:
     enabled: true
 
+  # SMTP server for notification e-mails (Mailpit in docker-compose; only used when pifa.mail.enabled=true).
+  mail:
+    host: ${PIFA_SMTP_HOST:localhost}
+    port: ${PIFA_SMTP_PORT:1025}
+
   # Upload size limits for the multipart endpoint (PRD: 10 MB per file).
   servlet:
     multipart:
@@ -62,6 +67,12 @@ pifa:
     spike-factor: 3.0
   retention:
     purge-days: 90
+  forecast:
+    change-threshold-pct: 20                  # RM change above this % needs a reason (BR-VA-05)
+  mail:
+    enabled: ${PIFA_MAIL_ENABLED:false}       # true to send notification e-mails from the outbox
+    from: pifa@example.test
+    address-template: "{target}@example.test"  # dev only: real recipients come from Keycloak later
   # SFTP poller: picks up *.xlsx from the inbound folders every poll-ms, ingests them, then archives them.
   sftp:
     enabled: ${PIFA_SFTP_ENABLED:false}

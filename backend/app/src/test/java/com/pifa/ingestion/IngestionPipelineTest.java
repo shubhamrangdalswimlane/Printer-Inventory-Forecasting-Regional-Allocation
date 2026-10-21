@@ -61,8 +61,8 @@ class IngestionPipelineTest {
 
     /** Start from a clean slate: remove synthetic data left over from earlier runs. */
     @BeforeAll
-    static void clean(@Autowired SyntheticDataService synthetic, @Autowired JdbcClient jdbc) {
-        com.pifa.TestData.wipeCycles(jdbc, MONTH);
+    static void clean(@Autowired SyntheticDataService synthetic, @Autowired JdbcClient jdbc, @Autowired org.springframework.transaction.support.TransactionTemplate tx) {
+        com.pifa.TestData.wipeCycles(tx, jdbc, MONTH);
         synthetic.purgeAll(ADMIN);
     }
 

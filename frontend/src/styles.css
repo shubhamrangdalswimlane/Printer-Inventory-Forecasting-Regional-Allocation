@@ -33,6 +33,40 @@ td.actions { white-space: normal; }
 .row-error { background: #fdecec; }
 .row-warning { background: #fff7e0; }
 
+/* Cycle banner: selector, state pill, per-region progress pills. */
+.banner { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.pill { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 13px; background: #e6ebf1; margin-right: 4px; }
+.state-FORECAST_DRAFT { background: #fff2cc; }
+.state-REGIONAL_REVIEW { background: #dbeafe; }
+.state-PLANNING { background: #e9d9fb; }
+.ok-pill { background: #d9f2e0; }
+.open-pill { background: #fde8d0; }
+
+/* Forecast grid: horizontal scroll with a frozen first column, narrow number inputs. */
+.grid-scroll { overflow-x: auto; max-height: 60vh; overflow-y: auto; }
+table.grid th, table.grid td { border-right: 1px solid #edf0f4; }
+.sticky { position: sticky; left: 0; background: #fff; z-index: 1; }
+thead .sticky { background: #f3f6fa; }
+th { position: sticky; top: 0; background: #f3f6fa; }
+.cellinput { width: 72px; }
+.narrow { width: 48px; }
+.reason { display: block; width: 130px; margin-top: 2px; font-size: 12px; }
+.reason.missing { border: 1px solid #b3261e; }
+td.changed { background: #fff7e0; }
+.bulk input { margin-left: 4px; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover td { background: #f3f8ff; }
+.findings { margin: 0; padding-left: 18px; }
+.findings .warn { color: #8a5a00; }
+.check { margin-right: 8px; }
+
+/* Notification bell and its dropdown. */
+.bell { position: relative; }
+.bell .badge { background: #b3261e; color: #fff; border-radius: 10px; font-size: 11px; padding: 0 6px; margin-left: 2px; }
+.bell-panel { position: absolute; right: 0; top: 34px; width: 340px; max-height: 360px; overflow-y: auto; background: #fff; border: 1px solid #dde3ea; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.12); padding: 8px; z-index: 5; }
+.notice { padding: 6px; border-bottom: 1px solid #edf0f4; cursor: pointer; }
+.notice.unread { background: #eef5ff; }
+
 /* Text colours for messages. */
 .muted { color: #5b6773; font-size: 14px; }
 .error { color: #b3261e; }

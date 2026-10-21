@@ -51,10 +51,11 @@ class SftpPollerTest {
     @Autowired SyntheticDataService synthetic;
     @Autowired DatasetRepository repo;
     @Autowired org.springframework.jdbc.core.simple.JdbcClient jdbc;
+    @Autowired org.springframework.transaction.support.TransactionTemplate tx;
 
     @Test
     void picksUpStableFilesIngestsArchivesAndReportsErrors() throws Exception {
-        com.pifa.TestData.wipeCycles(jdbc, MONTH);
+        com.pifa.TestData.wipeCycles(tx, jdbc, MONTH);
         synthetic.purgeAll(ADMIN);
         synthetic.seedMaster(1);
         byte[][] pair = synthetic.buildPair(MONTH, 1);
@@ -85,7 +86,7 @@ class SftpPollerTest {
             assertThat(worker.get("/outbound/errors/FORECAST_" + MONTH + "_bad_errors.csv")).contains("PRODUCT_UNKNOWN");
             worker.delete("/inbound/forecast/FORECAST_partial.xlsx.part");
         }
-        com.pifa.TestData.wipeCycles(jdbc, MONTH);
+        com.pifa.TestData.wipeCycles(tx, jdbc, MONTH);
         synthetic.purgeAll(ADMIN);
     }
 

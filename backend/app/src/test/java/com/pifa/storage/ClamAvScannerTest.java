@@ -19,7 +19,7 @@ class ClamAvScannerTest {
     private static final String EICAR = "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*";
 
     private ClamAvScanner scanner(int port) {
-        var props = new PifaProperties(null, new PifaProperties.Clamav(true, System.getenv("PIFA_TEST_CLAMAV_HOST"), port), null, null, null, null, null);
+        var props = new PifaProperties(null, new PifaProperties.Clamav(true, System.getenv("PIFA_TEST_CLAMAV_HOST"), port), null, null, null, null, null, null, null);
         return new ClamAvScanner(props);
     }
 

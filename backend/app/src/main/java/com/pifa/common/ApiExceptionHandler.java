@@ -19,6 +19,7 @@ public class ApiExceptionHandler {
     public ProblemDetail handle(ApiException e) {
         ProblemDetail p = ProblemDetail.forStatusAndDetail(e.getStatus(), e.getMessage());
         p.setProperty("code", e.getCode());
+        e.getExtra().forEach(p::setProperty);
         return p;
     }
 

@@ -1,0 +1,28 @@
+// =============================================================================
+// workflow.drl  -  package pifa.rules.workflow
+//
+// Purpose : transition guard rules. A guard decides whether a workflow action may happen.
+// Input   : one PublishCheck fact. More guards (approve, finalize) are added in later phases.
+// Output  : Violation objects appended to the global list "violations"; any ERROR blocks the action.
+// =============================================================================
+package pifa.rules.workflow;
+
+import com.pifa.rules.model.*;
+
+global java.util.List violations;
+
+// BR-WF-01 (a): publishing needs an active forecast version.
+rule "BR-WF-01 no active forecast"
+when
+    PublishCheck( hasActiveForecast == false )
+then
+    violations.add( Violation.error( "BR-WF-01", 0, null, "There is no active forecast version to publish" ) );
+end
+
+// BR-WF-01 (b): publishing is blocked while the forecast has blocking validation errors.
+rule "BR-WF-01 forecast has errors"
+when
+    PublishCheck( hasActiveForecast == true, errorCount > 0, $n : errorCount )
+then
+    violations.add( Violation.error( "BR-WF-01", 0, null, "The forecast has " + $n + " blocking validation error(s)" ) );
+end

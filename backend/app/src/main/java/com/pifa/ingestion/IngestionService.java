@@ -7,7 +7,9 @@ import com.pifa.dataset.DatasetType;
 import com.pifa.ingestion.ExcelReader.RawCell;
 import com.pifa.ingestion.ExcelReader.RowData;
 import com.pifa.ingestion.ExcelReader.SheetData;
+import com.pifa.forecast.WorkingCopyService;
 import com.pifa.master.MasterDataService;
+import com.pifa.notify.NotificationService;
 import com.pifa.master.ProductNames;
 import com.pifa.rules.RulesFacade;
 import com.pifa.rules.model.DateCell;
@@ -90,10 +92,15 @@ public class IngestionService {
     private final JdbcTemplate jdbcTemplate;
     private final TransactionTemplate tx;
     private final PifaProperties props;
+    private final WorkingCopyService workingCopy;
+    private final NotificationService notifications;
 
     public IngestionService(RulesFacade rules, MasterDataService master, DatasetRepository repo, FileStore files,
                             VirusScanner scanner, AuditService audit, JdbcClient jdbc, JdbcTemplate jdbcTemplate,
-                            TransactionTemplate tx, PifaProperties props) {
+                            TransactionTemplate tx, PifaProperties props, WorkingCopyService workingCopy,
+                            NotificationService notifications) {
+        this.workingCopy = workingCopy;
+        this.notifications = notifications;
         this.rules = rules;
         this.master = master;
         this.repo = repo;
@@ -384,6 +391,8 @@ public class IngestionService {
                 ? "FORECAST_DRAFT".equals(cycle.state())
                 : INVENTORY_ACTIVATE_STATES.contains(cycle.state());
             if (activate) repo.activate(versionId);
+            // A newly active forecast replaces the Forecaster's working copy (edits are snapshotted first).
+            if (activate && req.type() == DatasetType.FORECAST_UPLOAD) workingCopy.loadFromVersion(cycle.id(), versionId, req.actor());
 
             UUID jobId = saveJob(req, sha, "VALID", versionId, p.violations);
             audit.record(req.actor(), "UPLOAD", "dataset_version", versionId.toString(),
@@ -413,6 +422,12 @@ public class IngestionService {
             audit.record(req.actor(), "UPLOAD_REJECTED", "ingestion_job", jobId.toString(),
                 Map.of("filename", String.valueOf(req.filename()), "channel", req.channel(),
                     "codes", violations.stream().filter(v -> v.getSeverity() == Violation.Severity.ERROR).map(Violation::getCode).distinct().toList()));
+            // Tell the owning role (and Admin) that a file was rejected (PRD FR-COM-06 "ingestion failed").
+            String owner = req.type() == DatasetType.FORECAST_UPLOAD ? "forecaster" : "planner";
+            String text = "File '" + req.filename() + "' was rejected: " + violations.stream().filter(v -> v.getSeverity() == Violation.Severity.ERROR)
+                .map(Violation::getCode).distinct().toList();
+            notifications.notifyRole(owner, null, "Ingestion failed", text, null);
+            notifications.notifyRole("admin", null, "Ingestion failed", text, null);
             return new IngestResult(jobId, "REJECTED", null, null, false, toFindings(violations));
         });
     }

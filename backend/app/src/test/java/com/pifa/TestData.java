@@ -1,6 +1,9 @@
 package com.pifa;
 
+import com.pifa.workflow.CyclePurger;
+import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /** Test helper: removes everything belonging to given cycle months so tests can be re-run on a dirty database. */
 public final class TestData {
@@ -8,20 +11,19 @@ public final class TestData {
     private TestData() {}
 
     /**
-     * Deletes ingestion jobs, lines, versions and the cycle row for each month.
-     * (Audit rows are never deleted: the audit log is append-only by design.)
+     * Deletes each cycle completely (lines, snapshots, working copy, workflow history) in one transaction.
+     * Audit rows are never deleted: the audit log is append-only by design.
      *
+     * @param tx     transaction template (the purge must run inside a transaction)
      * @param jdbc   JDBC access
      * @param months cycle months such as {@code 2031-01}
      */
-    public static void wipeCycles(JdbcClient jdbc, String... months) {
-        for (String m : months) {
-            String versions = "SELECT v.id FROM dataset_version v JOIN planning_cycle c ON c.id = v.cycle_id WHERE c.month = :m";
-            jdbc.sql("DELETE FROM ingestion_job WHERE version_id IN (" + versions + ")").param("m", m).update();
-            jdbc.sql("DELETE FROM forecast_line WHERE version_id IN (" + versions + ")").param("m", m).update();
-            jdbc.sql("DELETE FROM inventory_line WHERE version_id IN (" + versions + ")").param("m", m).update();
-            jdbc.sql("DELETE FROM dataset_version WHERE cycle_id IN (SELECT id FROM planning_cycle WHERE month = :m)").param("m", m).update();
-            jdbc.sql("DELETE FROM planning_cycle WHERE month = :m").param("m", m).update();
-        }
+    public static void wipeCycles(TransactionTemplate tx, JdbcClient jdbc, String... months) {
+        tx.executeWithoutResult(status -> {
+            for (String m : months) {
+                jdbc.sql("SELECT id FROM planning_cycle WHERE month = :m").param("m", m).query(UUID.class).optional()
+                    .ifPresent(id -> CyclePurger.purge(jdbc, id));
+            }
+        });
     }
 }

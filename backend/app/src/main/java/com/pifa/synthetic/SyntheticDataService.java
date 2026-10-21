@@ -249,7 +249,15 @@ public class SyntheticDataService {
     @Transactional
     public int purgeAll(CurrentUser user) {
         requireEnabled();
-        List<String> keys = jdbc.sql("SELECT object_key FROM dataset_version WHERE source = 'SYNTHETIC' AND object_key IS NOT NULL").query(String.class).list();
+        // Cycles that hold no real (non-synthetic) upload are removed completely, including their working
+        // copy, snapshots, change log and workflow history.
+        List<UUID> syntheticCycles = jdbc.sql("""
+                SELECT c.id FROM planning_cycle c WHERE NOT EXISTS (
+                    SELECT 1 FROM dataset_version v WHERE v.cycle_id = c.id AND v.type IN ('FORECAST_UPLOAD', 'INVENTORY_UPLOAD') AND v.source <> 'SYNTHETIC')
+                """).query(UUID.class).list();
+        List<String> keys = jdbc.sql("SELECT object_key FROM dataset_version WHERE (source = 'SYNTHETIC' OR cycle_id IN (:ids)) AND object_key IS NOT NULL")
+            .param("ids", syntheticCycles.isEmpty() ? List.of(UUID.randomUUID()) : syntheticCycles).query(String.class).list();
+        syntheticCycles.forEach(id -> com.pifa.workflow.CyclePurger.purge(jdbc, id));
         jdbc.sql("DELETE FROM ingestion_job WHERE channel = 'SYNTHETIC'").update();
         jdbc.sql("DELETE FROM forecast_line WHERE version_id IN (SELECT id FROM dataset_version WHERE source = 'SYNTHETIC')").update();
         jdbc.sql("DELETE FROM inventory_line WHERE version_id IN (SELECT id FROM dataset_version WHERE source = 'SYNTHETIC')").update();
@@ -260,6 +268,7 @@ public class SyntheticDataService {
                 DELETE FROM product WHERE source = 'SYNTHETIC'
                 AND NOT EXISTS (SELECT 1 FROM forecast_line f WHERE f.product_id = product.id)
                 AND NOT EXISTS (SELECT 1 FROM inventory_line i WHERE i.product_id = product.id)
+                AND NOT EXISTS (SELECT 1 FROM plan_line pl WHERE pl.product_id = product.id)
                 AND NOT EXISTS (SELECT 1 FROM sales_history s WHERE s.product_id = product.id)
                 """).update();
         jdbc.sql("DELETE FROM planning_cycle c WHERE NOT EXISTS (SELECT 1 FROM dataset_version v WHERE v.cycle_id = c.id)").update();

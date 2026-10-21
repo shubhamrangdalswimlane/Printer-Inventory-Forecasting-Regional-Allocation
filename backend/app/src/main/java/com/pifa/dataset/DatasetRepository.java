@@ -29,12 +29,12 @@ public class DatasetRepository {
     public record VersionRow(UUID id, UUID cycleId, String cycleMonth, DatasetType type, int versionNo, String label,
                              String source, String status, boolean active, String originalFilename, String objectKey,
                              String sha256, int rowCount, String createdBy, OffsetDateTime createdAt,
-                             String deletedBy, OffsetDateTime deletedAt, String deleteReason) {}
+                             String deletedBy, OffsetDateTime deletedAt, String deleteReason, String scope) {}
 
     private static final String VERSION_SELECT = """
         SELECT v.id, v.cycle_id, c.month, v.type, v.version_no, v.label, v.source, v.status, v.is_active,
                v.original_filename, v.object_key, v.sha256, v.row_count, v.created_by, v.created_at,
-               v.deleted_by, v.deleted_at, v.delete_reason
+               v.deleted_by, v.deleted_at, v.delete_reason, v.scope
         FROM dataset_version v JOIN planning_cycle c ON c.id = v.cycle_id
         """;
 
@@ -50,7 +50,52 @@ public class DatasetRepository {
             rs.getString("source"), rs.getString("status"), rs.getBoolean("is_active"), rs.getString("original_filename"),
             rs.getString("object_key"), rs.getString("sha256"), rs.getInt("row_count"), rs.getString("created_by"),
             rs.getObject("created_at", OffsetDateTime.class), rs.getString("deleted_by"),
-            rs.getObject("deleted_at", OffsetDateTime.class), rs.getString("delete_reason"));
+            rs.getObject("deleted_at", OffsetDateTime.class), rs.getString("delete_reason"), rs.getString("scope"));
+    }
+
+    /**
+     * Inserts a workflow snapshot version (working-copy snapshot, published, revised ...). Snapshots
+     * are created by the system, carry no file, and are never active.
+     *
+     * @param id        new version id
+     * @param cycleId   owning cycle
+     * @param type      snapshot type (must not be an upload type)
+     * @param versionNo number within cycle and type
+     * @param label     display label, e.g. FCP-2026-11-v1
+     * @param scope     {@code ALL} or a region code for regional snapshots; may be null
+     * @param parentId  the version this snapshot was derived from (protects it from deletion), or null
+     * @param rowCount  number of lines copied
+     * @param createdBy actor
+     */
+    public void insertSnapshot(UUID id, UUID cycleId, DatasetType type, int versionNo, String label, String scope,
+                               UUID parentId, int rowCount, String createdBy) {
+        jdbc.sql("""
+                INSERT INTO dataset_version (id, cycle_id, type, version_no, label, source, status, row_count,
+                                             parent_version_id, created_by, scope)
+                VALUES (:id, :c, :t, :n, :l, 'SYSTEM', 'VALID', :r, :p, :u, :s)
+                """)
+            .param("id", id).param("c", cycleId).param("t", type.name()).param("n", versionNo).param("l", label)
+            .param("r", rowCount).param("p", parentId).param("u", createdBy).param("s", scope).update();
+    }
+
+    /**
+     * @param cycleId the cycle
+     * @param type    dataset type
+     * @return the id of the active version of that type in the cycle, if any
+     */
+    public Optional<UUID> activeVersionId(UUID cycleId, DatasetType type) {
+        return jdbc.sql("SELECT id FROM dataset_version WHERE cycle_id = :c AND type = :t AND is_active")
+            .param("c", cycleId).param("t", type.name()).query(UUID.class).optional();
+    }
+
+    /**
+     * @param cycleId the cycle
+     * @param type    snapshot type
+     * @return the id of the newest version of that type in the cycle, if any
+     */
+    public Optional<UUID> latestVersionId(UUID cycleId, DatasetType type) {
+        return jdbc.sql("SELECT id FROM dataset_version WHERE cycle_id = :c AND type = :t ORDER BY version_no DESC LIMIT 1")
+            .param("c", cycleId).param("t", type.name()).query(UUID.class).optional();
     }
 
     /** @param month YYYY-MM @return the cycle, if one exists */

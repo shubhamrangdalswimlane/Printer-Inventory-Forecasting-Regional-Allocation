@@ -1,0 +1,53 @@
+// =============================================================================
+// forecast.drl  -  package pifa.rules.forecast
+//
+// Purpose : forecast change control (PRD BR-VA-05, BR-VA-06) and working-copy checks (FR-FC-05).
+// Input   : ForecastChange facts (a Regional Manager revision), ForecastCell facts (a working-copy
+//           cell with its 6-month sales average) and one ForecastConfig fact with the limits.
+// Output  : Violation objects appended to the global list "violations".
+// =============================================================================
+package pifa.rules.forecast;
+
+import com.pifa.rules.model.*;
+
+global java.util.List violations;
+
+// BR-VA-05 (ERROR): a revision larger than the threshold must carry a reason.
+rule "BR-VA-05 reason required above threshold"
+when
+    ForecastConfig( $t : thresholdPct )
+    ForecastChange( absChangePct > $t, reasonBlank == true, $p : productName, $r : region, $pub : publishedQty, $rev : revisedQty )
+then
+    violations.add( Violation.error( "BR-VA-05", 0, $r,
+        $p + " / " + $r + ": changing " + $pub + " to " + $rev + " exceeds " + $t + "% and needs a reason" ) );
+end
+
+// BR-VA-06 (WARNING): a revision of more than 100% is flagged so the Planner can see it.
+rule "BR-VA-06 revision above 100 percent"
+when
+    ForecastChange( absChangePct > 100, $p : productName, $r : region, $pub : publishedQty, $rev : revisedQty )
+then
+    violations.add( Violation.warning( "BR-VA-06", 0, $r,
+        $p + " / " + $r + ": revised from " + $pub + " to " + $rev + " (more than 100% change)" ) );
+end
+
+// BR-FC-MAX (ERROR): a working-copy quantity above the allowed maximum blocks publishing.
+rule "BR-FC-MAX quantity above maximum"
+when
+    ForecastConfig( $max : maxQty )
+    ForecastCell( qty > $max, $p : productName, $r : region, $q : qty )
+then
+    violations.add( Violation.error( "BR-FC-MAX", 0, $r, $p + " / " + $r + ": quantity " + $q + " is above the maximum " + $max ) );
+end
+
+// BR-FC-SPIKE (WARNING): forecast is more than spikeFactor x the 6-month average sales.
+// avgSales6 = -1 means unknown, so only cells with history can warn.
+rule "BR-FC-SPIKE forecast far above sales"
+when
+    ForecastConfig( $f : spikeFactor )
+    ForecastCell( avgSales6 > 0, $p : productName, $r : region, $q : qty, $avg : avgSales6 )
+    eval( $q > $f * $avg )
+then
+    violations.add( Violation.warning( "BR-FC-SPIKE", 0, $r,
+        $p + " / " + $r + ": " + $q + " is more than " + $f + "x the 6-month average sales (" + Math.round( $avg ) + ")" ) );
+end

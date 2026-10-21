@@ -15,10 +15,29 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param ingestion  limits applied to every uploaded file
  * @param retention  how long soft-deleted versions are kept before an Admin may purge them
  * @param sftp       SFTP poller settings
+ * @param forecast   forecast change-control settings
+ * @param mail       e-mail notification settings
  */
 @ConfigurationProperties(prefix = "pifa")
 public record PifaProperties(Storage storage, Clamav clamav, Cycle cycle, Synthetic synthetic,
-                             Ingestion ingestion, Retention retention, Sftp sftp) {
+                             Ingestion ingestion, Retention retention, Sftp sftp, Forecast forecast, Mail mail) {
+
+    /**
+     * @param changeThresholdPct a Regional Manager change above this percent needs a reason (PRD: 20);
+     *                           becomes an Admin-editable rule parameter in Phase 3
+     */
+    public record Forecast(double changeThresholdPct) {}
+
+    /**
+     * E-mail notifications sent from the outbox (PRD FR-COM-06).
+     *
+     * @param enabled         true to send mails; when false the outbox rows simply wait
+     * @param from            sender address
+     * @param addressTemplate recipient address for a role or role+region; {@code {target}} is replaced by
+     *                        e.g. {@code regional_manager-north}. Development only: real recipients will be
+     *                        looked up from Keycloak users.
+     */
+    public record Mail(boolean enabled, String from, String addressTemplate) {}
 
     /** @param dir folder on disk for original files (Phase 1 uses local disk; S3/MinIO comes later) */
     public record Storage(String dir) {}
