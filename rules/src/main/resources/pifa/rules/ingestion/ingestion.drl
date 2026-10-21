@@ -1,0 +1,116 @@
+// =============================================================================
+// ingestion.drl  -  package pifa.rules.ingestion
+//
+// Purpose : row-level BUSINESS validation of forecast / inventory Excel files (PRD 8.4).
+// Input   : facts built by Java after parsing the file - ProductRow, QtyCell, MonthCell,
+//           DateCell - plus one IngestionConfig fact holding the limits.
+// Output  : Violation objects appended to the global list "violations".
+// Not here: file-structure checks (signature, macros, headers, virus scan) and the cycle lookup;
+//           those are mechanics and live in Java (architecture.md section 7.1).
+// Each rule is independent; none changes a fact, so rule order does not matter.
+// =============================================================================
+package pifa.rules.ingestion;
+
+import com.pifa.rules.model.*;
+
+// The list the Java caller passes in; rules add findings to it.
+global java.util.List violations;
+
+// PRODUCT_BLANK: Product_name cell is empty.
+rule "PRODUCT_BLANK"
+when
+    ProductRow( blank == true, $r : rowNo )
+then
+    violations.add( Violation.error( "PRODUCT_BLANK", $r, "Product_name", "Product_name is empty" ) );
+end
+
+// PRODUCT_UNKNOWN: name is present but matches neither the product master nor an alias.
+rule "PRODUCT_UNKNOWN"
+when
+    ProductRow( blank == false, known == false, $r : rowNo, $n : rawName )
+then
+    violations.add( Violation.error( "PRODUCT_UNKNOWN", $r, "Product_name",
+        "Product '" + $n + "' is not in the product master or alias table" ) );
+end
+
+// PRODUCT_DUPLICATE: the same normalised name already appeared on an EARLIER row.
+// Only the later row is reported, so the first occurrence is not flagged.
+rule "PRODUCT_DUPLICATE"
+when
+    ProductRow( blank == false, $key : normalizedName, $r : rowNo )
+    ProductRow( normalizedName == $key, rowNo < $r )
+then
+    violations.add( Violation.error( "PRODUCT_DUPLICATE", $r, "Product_name",
+        "Product appears more than once in the file (first on an earlier row)" ) );
+end
+
+// QTY_INVALID (parse level): Java already decided the cell is not a non-negative whole number.
+rule "QTY_INVALID - not a valid quantity"
+when
+    QtyCell( valid == false, $r : rowNo, $c : column, $why : reason )
+then
+    violations.add( Violation.error( "QTY_INVALID", $r, $c, "Invalid quantity: " + $why ) );
+end
+
+// QTY_INVALID (business limit): a valid number that is above the configured maximum.
+rule "QTY_INVALID - above maximum"
+when
+    IngestionConfig( $max : maxQty )
+    QtyCell( valid == true, value > $max, $r : rowNo, $c : column, $v : value )
+then
+    violations.add( Violation.error( "QTY_INVALID", $r, $c,
+        "Quantity " + $v + " is above the maximum " + $max ) );
+end
+
+// QTY_SPIKE (warning): forecast is more than spikeFactor x the 6-month average sales.
+// avgSales6 = -1 means "unknown / not applicable", so only cells with real history can warn.
+rule "QTY_SPIKE"
+when
+    IngestionConfig( $f : spikeFactor )
+    QtyCell( valid == true, avgSales6 > 0, $r : rowNo, $c : column, $v : value, $avg : avgSales6 )
+    eval( $v > $f * $avg )
+then
+    violations.add( Violation.warning( "QTY_SPIKE", $r, $c,
+        "Quantity " + $v + " is more than " + $f + "x the 6-month average sales (" + Math.round( $avg ) + ")" ) );
+end
+
+// MONTH_MISMATCH (a): month cell is blank or not a real YYYY-MM.
+rule "MONTH_MISMATCH - invalid month"
+when
+    MonthCell( valid == false, $r : rowNo, $c : column )
+then
+    violations.add( Violation.error( "MONTH_MISMATCH", $r, $c, "Month must be a valid YYYY-MM" ) );
+end
+
+// MONTH_MISMATCH (b): the row's month differs from the first row's month.
+rule "MONTH_MISMATCH - differs between rows"
+when
+    MonthCell( valid == true, $v : value, $e : expected, value != expected, $r : rowNo, $c : column )
+then
+    violations.add( Violation.error( "MONTH_MISMATCH", $r, $c,
+        "Month " + $v + " differs from the first row (" + $e + ")" ) );
+end
+
+// DATE_INVALID (a): As_Of_Date is missing or not a real date.
+rule "DATE_INVALID - missing or unreadable"
+when
+    DateCell( valid == false, $r : rowNo )
+then
+    violations.add( Violation.error( "DATE_INVALID", $r, "As_Of_Date", "As_Of_Date is missing or not a valid date" ) );
+end
+
+// DATE_INVALID (b): a valid date that differs from the first row's date.
+rule "DATE_INVALID - inconsistent"
+when
+    DateCell( valid == true, consistent == false, $r : rowNo )
+then
+    violations.add( Violation.error( "DATE_INVALID", $r, "As_Of_Date", "As_Of_Date differs from the first row" ) );
+end
+
+// DATE_INVALID (c): a valid date that lies in the future.
+rule "DATE_INVALID - in the future"
+when
+    DateCell( valid == true, future == true, $r : rowNo )
+then
+    violations.add( Violation.error( "DATE_INVALID", $r, "As_Of_Date", "As_Of_Date is in the future" ) );
+end

@@ -50,13 +50,27 @@ services:
   # own home, so sftp-forecast can only reach inbound/forecast and sftp-inventory only
   # inbound/inventory. This is how the folder decides which dashboard receives the file
   # (PRD section 8.2).
+  #
+  # Three accounts: two producers that only drop files, and pifa-worker, the account the API/poller
+  # uses to read, archive and write error reports. The drop folders are shared named volumes mounted
+  # into both the producer home and the worker home, so a producer upload is visible to the worker.
   sftp:
     image: atmoz/sftp
     command:
-      - sftp-forecast:forecast-dev:1001:100:inbound/forecast
-      - sftp-inventory:inventory-dev:1002:100:inbound/inventory
+      - sftp-forecast:forecast-dev:1001:100:inbound/forecast,outbound/errors
+      - sftp-inventory:inventory-dev:1002:100:inbound/inventory,outbound/errors
+      - pifa-worker:worker-dev:1000:100:inbound/forecast,inbound/inventory,outbound/errors,archive
     ports: ["2222:22"]           # host port 2222 so it does not clash with a local SSH server
-    volumes: [sftpdata:/home]
+    volumes:
+      - forecast-drop:/home/sftp-forecast/inbound/forecast
+      - forecast-drop:/home/pifa-worker/inbound/forecast
+      - inventory-drop:/home/sftp-inventory/inbound/inventory
+      - inventory-drop:/home/pifa-worker/inbound/inventory
+      - error-reports:/home/sftp-forecast/outbound/errors
+      - error-reports:/home/sftp-inventory/outbound/errors
+      - error-reports:/home/pifa-worker/outbound/errors
+      - archive:/home/pifa-worker/archive
+      - ./sftp/permissions.sh:/etc/sftp.d/permissions.sh:ro   # makes the shared folders group-writable
 
   # ClamAV antivirus daemon; the ingestion pipeline (Phase 1) streams uploaded files to port 3310.
   clamav:
@@ -72,4 +86,7 @@ services:
 volumes:
   pgdata:
   miniodata:
-  sftpdata:
+  forecast-drop:      # shared SFTP drop folder for forecast files
+  inventory-drop:     # shared SFTP drop folder for inventory files
+  error-reports:      # error CSVs written by the worker, readable by the producers
+  archive:            # processed files moved here by the worker

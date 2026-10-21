@@ -10,11 +10,31 @@ jobs:
   # Compile the Java code and run all JUnit tests (rules module + API module).
   backend:
     runs-on: ubuntu-latest
+    # PostgreSQL for the integration tests (the app tests need a real database).
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_DB: pifa, POSTGRES_USER: pifa, POSTGRES_PASSWORD: pifa }
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U pifa" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4                    # download the repository
       - uses: actions/setup-java@v4                  # install JDK 21 and cache Maven downloads
         with: { distribution: temurin, java-version: '21', cache: maven }
-      - run: mvn -B -f backend/pom.xml verify        # -B = batch mode (clean logs); verify = compile + test + package
+      # SFTP and ClamAV need volumes / startup time that job services cannot give, so they come from
+      # the same docker-compose file developers use. The tests that need them skip themselves when
+      # the PIFA_TEST_* variables below are absent.
+      - name: Start SFTP and ClamAV
+        run: |
+          docker compose -f infra/docker-compose.yml up -d sftp clamav
+          until docker compose -f infra/docker-compose.yml exec -T clamav clamdcheck.sh; do sleep 5; done
+      - name: Build and test
+        env:
+          PIFA_TEST_SFTP_HOST: localhost
+          PIFA_TEST_SFTP_PORT: '2222'
+          PIFA_TEST_CLAMAV_HOST: localhost
+        run: mvn -B -f backend/pom.xml verify        # -B = batch mode (clean logs); verify = compile + test + package
       - name: SBOM                                   # software bill of materials (CycloneDX) for supply-chain tracking
         run: mvn -B -f backend/pom.xml org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom
 

@@ -65,6 +65,18 @@
       <artifactId>postgresql</artifactId>
       <scope>runtime</scope>
     </dependency>
+    <!-- Apache POI: reads and writes .xlsx files (ingestion, exports, templates, synthetic data). -->
+    <dependency>
+      <groupId>org.apache.poi</groupId>
+      <artifactId>poi-ooxml</artifactId>
+      <version>5.4.0</version>
+    </dependency>
+    <!-- JSch (maintained fork): SFTP client used by the ingestion poller. -->
+    <dependency>
+      <groupId>com.github.mwiede</groupId>
+      <artifactId>jsch</artifactId>
+      <version>0.2.20</version>
+    </dependency>
     <!-- Generates the OpenAPI 3 description and Swagger UI at /swagger-ui.html. -->
     <dependency>
       <groupId>org.springdoc</groupId>

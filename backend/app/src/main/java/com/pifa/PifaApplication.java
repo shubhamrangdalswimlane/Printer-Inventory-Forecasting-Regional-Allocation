@@ -3,17 +3,23 @@ package com.pifa;
 import com.pifa.rules.RulesFacade;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 import org.springframework.context.annotation.Bean;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * Entry point of the PIFA backend (the {@code pifa-api} role).
  *
  * <p>{@code @SpringBootApplication} turns on three things: component scanning of the
- * {@code com.pifa} package (so controllers and config classes are found automatically),
- * Spring Boot auto-configuration (web server, security, database, Flyway ...), and this class
- * as a source of {@code @Bean} definitions.
+ * {@code com.pifa} package (so controllers and services are found automatically), Spring Boot
+ * auto-configuration (web server, security, database, Flyway ...), and this class as a source of
+ * {@code @Bean} definitions. {@code @ConfigurationPropertiesScan} registers
+ * {@link com.pifa.config.PifaProperties} so the {@code pifa.*} settings can be injected.
+ * {@code @EnableScheduling} lets {@code @Scheduled} methods (the SFTP poller) run.
  */
 @SpringBootApplication
+@ConfigurationPropertiesScan
+@EnableScheduling
 public class PifaApplication {
 
     /**

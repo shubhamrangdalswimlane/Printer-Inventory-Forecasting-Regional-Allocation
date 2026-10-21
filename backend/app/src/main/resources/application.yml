@@ -25,6 +25,12 @@ spring:
   flyway:
     enabled: true
 
+  # Upload size limits for the multipart endpoint (PRD: 10 MB per file).
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 11MB
+
   security:
     oauth2:
       resourceserver:
@@ -32,6 +38,45 @@ spring:
           # Keycloak realm URL. Spring downloads its public signing keys from here to verify
           # tokens, and rejects tokens whose "iss" claim differs.
           issuer-uri: ${PIFA_OIDC_ISSUER:http://localhost:8081/realms/pifa-dev}
+          # Optional: where to fetch the signing keys when the API reaches Keycloak by a different
+          # address than the browser does (e.g. a Docker network name). When set, Spring uses it
+          # instead of discovering keys via issuer-uri, but still checks the token's "iss" equals issuer-uri.
+          jwk-set-uri: ${PIFA_OIDC_JWK_SET_URI:}
+
+# Application settings (bound to com.pifa.config.PifaProperties).
+pifa:
+  storage:
+    dir: ${PIFA_STORAGE_DIR:./data/files}     # original uploaded files (local disk in Phase 1)
+  clamav:
+    enabled: ${PIFA_CLAMAV_ENABLED:false}     # true to scan every file with clamd
+    host: ${PIFA_CLAMAV_HOST:localhost}
+    port: ${PIFA_CLAMAV_PORT:3310}
+  cycle:
+    auto-create: true                         # a forecast for a new month creates its cycle
+  synthetic:
+    enabled: ${PIFA_SYNTHETIC_ENABLED:true}   # MUST be false in production
+  ingestion:
+    max-file-bytes: 10485760                  # 10 MB
+    max-rows: 50000
+    max-qty: 1000000
+    spike-factor: 3.0
+  retention:
+    purge-days: 90
+  # SFTP poller: picks up *.xlsx from the inbound folders every poll-ms, ingests them, then archives them.
+  sftp:
+    enabled: ${PIFA_SFTP_ENABLED:false}
+    host: ${PIFA_SFTP_HOST:localhost}
+    port: ${PIFA_SFTP_PORT:2222}
+    username: ${PIFA_SFTP_USER:pifa-worker}
+    password: ${PIFA_SFTP_PASSWORD:worker-dev}      # dev only; real environments use private-key
+    private-key: ${PIFA_SFTP_PRIVATE_KEY:}
+    strict-host-key: ${PIFA_SFTP_STRICT_HOST_KEY:true}
+    known-hosts: ${PIFA_SFTP_KNOWN_HOSTS:}
+    forecast-dir: /inbound/forecast
+    inventory-dir: /inbound/inventory
+    errors-dir: /outbound/errors
+    archive-dir: /archive
+    poll-ms: 60000
 
 # Actuator = built-in operations endpoints.
 management:

@@ -1,4 +1,4 @@
-/* styles.css - global styles for the Phase 0 shell. Real design tokens arrive with the UX work. */
+/* styles.css - global styles. Real design tokens arrive with the UX work. */
 
 /* Page-wide font and text colour. */
 :root { font-family: system-ui, sans-serif; color: #1c2733; }
@@ -6,12 +6,34 @@
 /* Light grey page background; remove the browser default 8px margin. */
 body { margin: 0; background: #f6f8fb; }
 
-/* Centre the content in a column up to 960px wide, with padding on narrow (tablet/phone) screens. */
-main { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+/* Centre the content in a wide column, with padding on narrow (tablet/phone) screens. */
+main { max-width: 1200px; margin: 0 auto; padding: 24px 16px; }
 
 /* Top bar: title on the left (flex: 1 pushes the rest right), then username and Sign out button. */
 header { display: flex; gap: 16px; align-items: center; }
 header h1 { margin: 0; flex: 1; }
 
 /* Basic button spacing and pointer cursor. */
-button { padding: 6px 14px; cursor: pointer; }
+button { padding: 4px 10px; cursor: pointer; margin-right: 4px; }
+/* A button that looks like a text link (used inside sentences). */
+button.link { background: none; border: none; color: #1a56a8; text-decoration: underline; padding: 0; }
+
+/* White panel used by every dashboard section. */
+.card { background: #fff; border: 1px solid #dde3ea; border-radius: 8px; padding: 12px 16px; margin: 16px 0; overflow-x: auto; }
+.card h3 { margin-top: 0; }
+
+/* Data tables. */
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #edf0f4; white-space: nowrap; }
+td.actions { white-space: normal; }
+
+/* Row highlights: active version, deleted version, errors, warnings. */
+.row-active { background: #eaf6ee; }
+.row-deleted { color: #7a8794; text-decoration: line-through; }
+.row-error { background: #fdecec; }
+.row-warning { background: #fff7e0; }
+
+/* Text colours for messages. */
+.muted { color: #5b6773; font-size: 14px; }
+.error { color: #b3261e; }
+.ok { color: #1d7a3a; }

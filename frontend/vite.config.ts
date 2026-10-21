@@ -13,6 +13,7 @@ export default defineConfig({
     port: 5173,
     // Forward /api/* calls to the Spring Boot API during development. The browser then sees a
     // single origin, so no CORS configuration is needed locally.
-    proxy: { '/api': 'http://localhost:8080' },
+    // Override with VITE_API_TARGET when the API listens elsewhere (e.g. port 8080 is taken).
+    proxy: { '/api': process.env.VITE_API_TARGET ?? 'http://localhost:8080' },
   },
 })
