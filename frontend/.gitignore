@@ -1,2 +1,3 @@
+# Installed packages and build output are generated; never commit them.
 node_modules
 dist

@@ -1,4 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  kmodule.xml - tells Drools which rule files to load and how to run them.
+
+  kbase    : a compiled bundle of rules. "packages" lists which rule packages (folders under
+             src/main/resources) belong to it. Add new packages here as rules are added
+             (ingestion, forecast, transfer, workflow ...).
+  ksession : how rules are executed. "stateless" means each call gets a fresh session with no
+             memory of earlier calls, which is thread-safe and what RulesFacade expects.
+  default  : lets code ask for "the" kbase / session without naming it.
+-->
 <kmodule xmlns="http://www.drools.org/xsd/kmodule">
   <kbase name="pifaKBase" packages="pifa.rules.allocation.strategy" default="true">
     <ksession name="pifaStateless" type="stateless" default="true"/>

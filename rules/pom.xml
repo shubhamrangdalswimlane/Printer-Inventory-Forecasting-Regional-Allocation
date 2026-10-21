@@ -1,8 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  rules/pom.xml - Maven build file for the "pifa-rules" module.
+
+  This module holds ALL Drools business rules (policy) and nothing else: the DRL files, the small
+  fact classes they use, and RulesFacade (the Java entry point). The Spring Boot app depends on it.
+  Keeping rules in their own module lets them be versioned and tested on their own.
+-->
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
+  <!-- Inherits Java 21, Spring Boot dependency versions and drools.version from backend/pom.xml. -->
   <parent>
     <groupId>com.pifa</groupId>
     <artifactId>pifa-parent</artifactId>
@@ -15,35 +23,42 @@
   <description>Drools ruleset (policy). Semantic version tracked separately in rules/CHANGELOG.md.</description>
 
   <dependencies>
+    <!-- kie-api: the public Drools API (KieServices, KieContainer, sessions). -->
     <dependency>
       <groupId>org.kie</groupId>
       <artifactId>kie-api</artifactId>
       <version>${drools.version}</version>
     </dependency>
+    <!-- drools-core: the rule engine runtime. -->
     <dependency>
       <groupId>org.drools</groupId>
       <artifactId>drools-core</artifactId>
       <version>${drools.version}</version>
     </dependency>
+    <!-- drools-compiler: compiles .drl text into executable rules at startup. -->
     <dependency>
       <groupId>org.drools</groupId>
       <artifactId>drools-compiler</artifactId>
       <version>${drools.version}</version>
     </dependency>
+    <!-- drools-mvel: lets rule bodies ("then" blocks) contain Java-like code. -->
     <dependency>
       <groupId>org.drools</groupId>
       <artifactId>drools-mvel</artifactId>
       <version>${drools.version}</version>
     </dependency>
+    <!-- drools-xml-support: reads META-INF/kmodule.xml. -->
     <dependency>
       <groupId>org.drools</groupId>
       <artifactId>drools-xml-support</artifactId>
       <version>${drools.version}</version>
     </dependency>
+    <!-- slf4j-api: logging interface used by Drools. -->
     <dependency>
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-api</artifactId>
     </dependency>
+    <!-- JUnit 5 + AssertJ for the rule tests (test scope: not shipped). -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>

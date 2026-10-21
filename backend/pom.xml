@@ -1,4 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  backend/pom.xml - the PARENT build file for all Java code. Build everything with:
+      mvn -f backend/pom.xml verify
+
+  It does three jobs:
+    1. Inherits from spring-boot-starter-parent, which pins compatible versions of Spring, JUnit, etc.
+    2. Lists the modules that make up the backend (the rules module lives outside this folder).
+    3. Holds shared properties (Java version, Drools version) used by the child modules.
+-->
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
@@ -13,16 +22,19 @@
   <groupId>com.pifa</groupId>
   <artifactId>pifa-parent</artifactId>
   <version>0.1.0-SNAPSHOT</version>
+  <!-- "pom" packaging = this file only organises children; it produces no jar itself. -->
   <packaging>pom</packaging>
   <name>pifa-parent</name>
 
   <modules>
+    <!-- Order matters little: Maven sorts by dependency. rules is built before app. -->
     <module>../rules</module>
     <module>app</module>
   </modules>
 
   <properties>
     <java.version>21</java.version>
+    <!-- Pinned in Phase 0. The docs target 10.x; 9.44 was chosen for the first spike. -->
     <drools.version>9.44.0.Final</drools.version>
   </properties>
 </project>

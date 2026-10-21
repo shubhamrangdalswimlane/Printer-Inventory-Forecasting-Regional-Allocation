@@ -19,10 +19,35 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.web.SecurityFilterChain;
 
+/**
+ * Configures how the API authenticates and authorizes requests.
+ *
+ * <p>The API is an OAuth2 <em>resource server</em>: the browser logs in to Keycloak, receives a
+ * signed JWT (access token) and sends it as {@code Authorization: Bearer <token>}. This class
+ * makes Spring verify that token (signature, issuer, expiry; keys come from Keycloak's JWKS
+ * endpoint via {@code issuer-uri} in application.yml) and turns its claims into Spring roles.
+ *
+ * <p>{@code @EnableMethodSecurity} allows later services to use annotations such as
+ * {@code @PreAuthorize("hasRole('PLANNER')")}.
+ */
 @Configuration
 @EnableMethodSecurity
 public class SecurityConfig {
 
+    /**
+     * Defines the HTTP security rules for every request.
+     *
+     * <ul>
+     *   <li>CSRF is off: it protects cookie sessions, and this API uses bearer tokens only.</li>
+     *   <li>Sessions are stateless: nothing is remembered between requests; the token is the identity.</li>
+     *   <li>Public: health probes and the OpenAPI/Swagger pages. Everything else needs a valid token.</li>
+     *   <li>CORS uses Spring defaults (same-origin); the Vite dev server proxies {@code /api} instead.</li>
+     * </ul>
+     *
+     * @param http Spring's builder for the security filter chain (injected by Spring)
+     * @return the finished filter chain applied to all requests
+     * @throws Exception if the configuration is invalid (propagated from the builder)
+     */
     @Bean
     SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
@@ -37,7 +62,15 @@ public class SecurityConfig {
         return http.build();
     }
 
-    /** realm_access.roles -> ROLE_FORECASTER, ROLE_REGIONAL_MANAGER, ... */
+    /**
+     * Builds the converter that turns a verified JWT into a Spring authentication object.
+     *
+     * <p>It does two things: maps Keycloak realm roles to Spring authorities (see
+     * {@link #authorities(Jwt)}), and uses the {@code preferred_username} claim as the user's name
+     * (instead of the default {@code sub}, which is an opaque id).
+     *
+     * @return a converter from {@link Jwt} to an authentication token
+     */
     Converter<Jwt, AbstractAuthenticationToken> jwtAuthenticationConverter() {
         JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
         converter.setJwtGrantedAuthoritiesConverter(SecurityConfig::authorities);
@@ -45,10 +78,21 @@ public class SecurityConfig {
         return converter;
     }
 
-    @SuppressWarnings("unchecked")
+    /**
+     * Reads the Keycloak realm roles from the token and converts them to Spring authorities.
+     *
+     * <p>Keycloak puts roles at {@code realm_access.roles}, for example
+     * {@code ["regional_manager"]}. Spring expects the {@code ROLE_} prefix and conventionally
+     * upper case, so {@code regional_manager} becomes {@code ROLE_REGIONAL_MANAGER}. A token with
+     * no {@code realm_access} claim yields an empty list (the user then has no roles).
+     *
+     * @param jwt the verified access token
+     * @return one {@link GrantedAuthority} per realm role; never {@code null}
+     */
     static Collection<GrantedAuthority> authorities(Jwt jwt) {
         List<GrantedAuthority> result = new ArrayList<>();
         Object realmAccess = jwt.getClaim("realm_access");
+        // Pattern-matching checks both the shape (Map) and the content (a collection under "roles").
         if (realmAccess instanceof Map<?, ?> map && map.get("roles") instanceof Collection<?> roles) {
             for (Object role : roles) {
                 result.add(new SimpleGrantedAuthority("ROLE_" + role.toString().toUpperCase()));

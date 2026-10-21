@@ -1,6 +1,12 @@
+# Build output and tooling folders that must not be committed.
+
+# Maven build output
 target/
+# npm packages
 node_modules/
+# frontend production build
 dist/
+# IDE settings
 .idea/
 .vscode/
 *.log

@@ -1,12 +1,19 @@
 <!doctype html>
+<!--
+  index.html - the single HTML page of the single-page app (SPA).
+  The browser loads this, then src/main.tsx builds the whole UI inside <div id="root">.
+-->
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- Makes the layout scale correctly on tablets and phones. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PIFA</title>
   </head>
   <body>
+    <!-- React mounts here. -->
     <div id="root"></div>
+    <!-- Vite serves and bundles this TypeScript entry file. -->
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -1,19 +1,24 @@
+# ci.yml - GitHub Actions pipeline. Runs on every pull request and on every push to main.
+# Four jobs: backend and frontend build+test, a security scan, and (main only) a container image.
 name: ci
+
 on:
-  push: { branches: [main] }
-  pull_request:
+  push: { branches: [main] }   # run on merges to main
+  pull_request:                # run on every PR so problems are caught before merge
 
 jobs:
+  # Compile the Java code and run all JUnit tests (rules module + API module).
   backend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v4                    # download the repository
+      - uses: actions/setup-java@v4                  # install JDK 21 and cache Maven downloads
         with: { distribution: temurin, java-version: '21', cache: maven }
-      - run: mvn -B -f backend/pom.xml verify
-      - name: SBOM
+      - run: mvn -B -f backend/pom.xml verify        # -B = batch mode (clean logs); verify = compile + test + package
+      - name: SBOM                                   # software bill of materials (CycloneDX) for supply-chain tracking
         run: mvn -B -f backend/pom.xml org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom
 
+  # Install exact locked dependencies and make sure the TypeScript compiles and the bundle builds.
   frontend:
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: frontend } }
@@ -21,30 +26,42 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: '22', cache: npm, cache-dependency-path: frontend/package-lock.json }
-      - run: npm ci
-      - run: npm run build
+      - run: npm ci                                  # reproducible install from package-lock.json
+      - run: npm run build                           # type-check (tsc) + production build (vite)
 
+  # Security gates: fail the build on known CRITICAL/HIGH vulnerabilities or risky code patterns.
   security:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: aquasecurity/trivy-action@0.28.0
-        with: { scan-type: fs, severity: 'CRITICAL,HIGH', exit-code: '1', ignore-unfixed: true }
-      - uses: returntocorp/semgrep-action@v1
-        with: { config: p/default }
+      # Scanners run as pinned container images instead of third-party GitHub Actions. The
+      # action tag aquasecurity/trivy-action@0.28.0 no longer resolves, and running the image
+      # directly removes a third-party action from the supply chain.
+      # Trivy: scans dependencies and config for known CVEs and secrets; fails on CRITICAL/HIGH.
+      - name: Trivy filesystem scan
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src aquasec/trivy:0.58.0 \
+            fs --scanners vuln,secret,misconfig --severity CRITICAL,HIGH \
+            --exit-code 1 --ignore-unfixed .
+      # Semgrep: static analysis (SAST) with the default rule set; --error fails on findings.
+      - name: Semgrep scan
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src semgrep/semgrep:latest \
+            semgrep scan --config p/default --error
 
+  # Build and publish the API container image, only after everything above passed and only on main.
   image:
     needs: [backend, frontend, security]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    permissions: { packages: write, contents: read }
+    permissions: { packages: write, contents: read }   # least privilege: may push packages, read code
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v3                 # log in to GitHub Container Registry with the built-in token
         with: { registry: ghcr.io, username: '${{ github.actor }}', password: '${{ secrets.GITHUB_TOKEN }}' }
       - uses: docker/build-push-action@v6
         with:
-          context: .
+          context: .                                  # repository root (the Dockerfile copies backend/ and rules/)
           file: backend/Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository }}/pifa-api:${{ github.sha }}
+          tags: ghcr.io/${{ github.repository }}/pifa-api:${{ github.sha }}   # tagged with the commit id

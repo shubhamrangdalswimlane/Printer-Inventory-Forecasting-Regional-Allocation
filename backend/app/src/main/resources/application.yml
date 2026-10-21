@@ -1,30 +1,49 @@
+# application.yml - runtime configuration of the Spring Boot app.
+# Values written as ${NAME:default} read the environment variable NAME, or use the default after
+# the colon. Local development works with the defaults; real environments set the variables.
+
 spring:
   application:
     name: pifa
+
+  # PostgreSQL connection. Defaults match infra/docker-compose.yml (dev-only credentials).
   datasource:
     url: ${PIFA_DB_URL:jdbc:postgresql://localhost:5432/pifa}
     username: ${PIFA_DB_USER:pifa}
     password: ${PIFA_DB_PASSWORD:pifa}
+
   jpa:
+    # Do not keep a DB session open during view rendering (avoids hidden lazy-loading queries).
     open-in-view: false
     hibernate:
+      # "validate": Hibernate only CHECKS that tables match entities. Flyway (below) owns the
+      # schema; Hibernate must never create or alter tables.
       ddl-auto: validate
+
+  # Runs SQL files from src/main/resources/db/migration (V1__..., V2__...) at startup, in order,
+  # exactly once each. Migrations are forward-only.
   flyway:
     enabled: true
+
   security:
     oauth2:
       resourceserver:
         jwt:
+          # Keycloak realm URL. Spring downloads its public signing keys from here to verify
+          # tokens, and rejects tokens whose "iss" claim differs.
           issuer-uri: ${PIFA_OIDC_ISSUER:http://localhost:8081/realms/pifa-dev}
 
+# Actuator = built-in operations endpoints.
 management:
   endpoints:
     web:
       exposure:
+        # Only expose health and info over HTTP (nothing sensitive like env or beans).
         include: health,info
   endpoint:
     health:
       probes:
+        # Adds /actuator/health/liveness and /readiness for Kubernetes.
         enabled: true
 
 server:

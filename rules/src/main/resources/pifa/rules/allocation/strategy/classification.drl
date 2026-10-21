@@ -1,9 +1,24 @@
+// =============================================================================
+// classification.drl  -  package pifa.rules.allocation.strategy
+//
+// Purpose : decide whether a printer model is CONSTRAINED or SUFFICIENT (PRD BR-AL-02).
+// Input   : one ProductStock fact (allocatableQty, totalDemand, classification == null).
+// Output  : the same fact with its classification set.
+// Used by : RulesFacade.classify(...). Later phases add the allocation strategy rules here.
+//
+// How Drools reads this file:
+//   rule "name" salience N  - salience is priority; higher numbers are tried first.
+//   when ... then ...       - "when" matches facts; "then" runs Java-like code on the match.
+//   modify($s) { ... }      - changes the fact AND tells Drools, so other rules re-check it.
+// =============================================================================
 package pifa.rules.allocation.strategy;
 
 import com.pifa.rules.model.ProductStock;
 import com.pifa.rules.model.Classification;
 
-// BR-AL-02: constrained if total revised demand > allocatable stock
+// Rule 1 - runs first (salience 100).
+// Matches a model that has no classification yet AND whose total demand is larger than the
+// stock available to allocate. Marks it CONSTRAINED.
 rule "Classify constrained product"
     salience 100
 when
@@ -12,6 +27,10 @@ then
     modify( $s ) { setClassification( Classification.CONSTRAINED ) }
 end
 
+// Rule 2 - runs after rule 1 (salience 90).
+// Catches every model that rule 1 did NOT classify (classification is still null), which means
+// demand <= stock. Marks it SUFFICIENT. The "classification == null" test is what prevents this
+// rule from overwriting a CONSTRAINED result.
 rule "Classify sufficient product"
     salience 90
 when

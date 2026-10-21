@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  backend/app/pom.xml - build file for "pifa-app", the runnable Spring Boot application.
+  It depends on pifa-rules and packages everything into one executable jar
+  (backend/app/target/pifa-app-*.jar), run with: java -jar pifa-app-*.jar
+-->
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
@@ -14,31 +19,38 @@
   <name>pifa-app</name>
 
   <dependencies>
+    <!-- Our own Drools rules module. -->
     <dependency>
       <groupId>com.pifa</groupId>
       <artifactId>pifa-rules</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <!-- REST controllers + embedded Tomcat web server. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-web</artifactId>
     </dependency>
+    <!-- Spring Security core (filters, method security). -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-security</artifactId>
     </dependency>
+    <!-- Validates Keycloak JWTs sent as bearer tokens. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
     </dependency>
+    <!-- Health and info endpoints for Kubernetes probes and monitoring. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-actuator</artifactId>
     </dependency>
+    <!-- JPA/Hibernate for database access (used from Phase 1). -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-data-jpa</artifactId>
     </dependency>
+    <!-- Flyway: versioned database migrations; the postgresql module adds PostgreSQL 16 support. -->
     <dependency>
       <groupId>org.flywaydb</groupId>
       <artifactId>flyway-core</artifactId>
@@ -47,17 +59,20 @@
       <groupId>org.flywaydb</groupId>
       <artifactId>flyway-database-postgresql</artifactId>
     </dependency>
+    <!-- PostgreSQL JDBC driver; runtime scope = needed to run, not to compile. -->
     <dependency>
       <groupId>org.postgresql</groupId>
       <artifactId>postgresql</artifactId>
       <scope>runtime</scope>
     </dependency>
+    <!-- Generates the OpenAPI 3 description and Swagger UI at /swagger-ui.html. -->
     <dependency>
       <groupId>org.springdoc</groupId>
       <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
       <version>2.6.0</version>
     </dependency>
 
+    <!-- Test-only dependencies (JUnit 5, Mockito, MockMvc, AssertJ; security test helpers). -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>
@@ -72,6 +87,7 @@
 
   <build>
     <plugins>
+      <!-- Repackages the jar into an executable "fat jar" containing all dependencies. -->
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>

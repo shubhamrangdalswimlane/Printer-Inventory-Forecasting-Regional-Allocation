@@ -1,29 +1,41 @@
-# Local stack for development. Dev-only credentials; never reuse outside local.
+# docker-compose.yml - the local development stack.
+# Start:  docker compose -f infra/docker-compose.yml up -d
+# Stop:   docker compose -f infra/docker-compose.yml down        (add -v to also delete data)
+# Every credential below is a DEV-ONLY value for a laptop. Never reuse them in any shared or
+# production environment (those get secrets from a secret manager).
 services:
+
+  # PostgreSQL 16: the main business database (Flyway creates the tables when the API starts).
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_DB: pifa
+      POSTGRES_DB: pifa          # database created on first start
       POSTGRES_USER: pifa
       POSTGRES_PASSWORD: pifa
-    ports: ["5432:5432"]
-    volumes: [pgdata:/var/lib/postgresql/data]
-    healthcheck:
+    ports: ["5432:5432"]         # host:container; matches the defaults in application.yml
+    volumes: [pgdata:/var/lib/postgresql/data]   # named volume keeps data across restarts
+    healthcheck:                 # compose marks the service healthy once Postgres accepts connections
       test: ["CMD-SHELL", "pg_isready -U pifa"]
       interval: 5s
       retries: 10
 
+  # Keycloak 26: login/SSO server. "start-dev" = single-node dev mode (no TLS). "--import-realm"
+  # loads every JSON file in /opt/keycloak/data/import on first start, which creates realm
+  # pifa-dev with its roles, clients and test users.
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
     command: start-dev --import-realm
     environment:
-      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin   # admin-console login (master realm), dev only
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
-      KC_HTTP_PORT: 8081
+      KC_HTTP_PORT: 8081                    # 8081 because the API uses 8080
     ports: ["8081:8081"]
     volumes:
+      # Read-only mount of the realm-as-code file. See infra/keycloak/README.md for its contents.
       - ./keycloak/realm-pifa-dev.json:/opt/keycloak/data/import/realm-pifa-dev.json:ro
 
+  # MinIO: S3-compatible object storage for raw Excel files, exports and error reports.
+  # API on :9000, web console on :9001.
   minio:
     image: minio/minio
     command: server /data --console-address ":9001"
@@ -33,23 +45,30 @@ services:
     ports: ["9000:9000", "9001:9001"]
     volumes: [miniodata:/data]
 
+  # SFTP server that stands in for the upstream systems drop box.
+  # Each command line is  user:password:uid:gid:folder . Every account is locked (chrooted) to its
+  # own home, so sftp-forecast can only reach inbound/forecast and sftp-inventory only
+  # inbound/inventory. This is how the folder decides which dashboard receives the file
+  # (PRD section 8.2).
   sftp:
     image: atmoz/sftp
-    # user:pass:uid:gid:folder — each account is chrooted to its own folder
     command:
       - sftp-forecast:forecast-dev:1001:100:inbound/forecast
       - sftp-inventory:inventory-dev:1002:100:inbound/inventory
-    ports: ["2222:22"]
+    ports: ["2222:22"]           # host port 2222 so it does not clash with a local SSH server
     volumes: [sftpdata:/home]
 
+  # ClamAV antivirus daemon; the ingestion pipeline (Phase 1) streams uploaded files to port 3310.
   clamav:
     image: clamav/clamav:stable
     ports: ["3310:3310"]
 
+  # Mailpit: a fake SMTP server that catches outgoing emails. SMTP on :1025, inbox UI on :8025.
   mailpit:
     image: axllent/mailpit
     ports: ["1025:1025", "8025:8025"]
 
+# Named volumes: data that survives `docker compose down` (deleted only by `down -v`).
 volumes:
   pgdata:
   miniodata:

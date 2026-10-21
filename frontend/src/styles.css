@@ -1,6 +1,17 @@
+/* styles.css - global styles for the Phase 0 shell. Real design tokens arrive with the UX work. */
+
+/* Page-wide font and text colour. */
 :root { font-family: system-ui, sans-serif; color: #1c2733; }
+
+/* Light grey page background; remove the browser default 8px margin. */
 body { margin: 0; background: #f6f8fb; }
+
+/* Centre the content in a column up to 960px wide, with padding on narrow (tablet/phone) screens. */
 main { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+
+/* Top bar: title on the left (flex: 1 pushes the rest right), then username and Sign out button. */
 header { display: flex; gap: 16px; align-items: center; }
 header h1 { margin: 0; flex: 1; }
+
+/* Basic button spacing and pointer cursor. */
 button { padding: 6px 14px; cursor: pointer; }

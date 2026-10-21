@@ -1,14 +1,16 @@
+// tsconfig.json - TypeScript compiler settings (comments are allowed in this file).
+// Type-checking only: Vite does the actual transpiling, so "noEmit" is true.
 {
   "compilerOptions": {
-    "target": "ES2022",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "jsx": "react-jsx",
-    "strict": true,
-    "noEmit": true,
-    "skipLibCheck": true,
-    "isolatedModules": true
+    "target": "ES2022",                       // modern JavaScript output level
+    "lib": ["ES2022", "DOM", "DOM.Iterable"], // available built-in types: JS language + browser APIs
+    "module": "ESNext",                       // keep import/export for Vite to bundle
+    "moduleResolution": "bundler",            // resolve imports the way Vite does
+    "jsx": "react-jsx",                       // modern JSX transform: no need to import React in each file
+    "strict": true,                           // all strict type checks on (null checks, no implicit any ...)
+    "noEmit": true,                           // do not write .js files; only report errors
+    "skipLibCheck": true,                     // do not type-check third-party .d.ts files (faster)
+    "isolatedModules": true                   // each file must be compilable alone (required by Vite)
   },
-  "include": ["src"]
+  "include": ["src"]                          // only check the source folder
 }
