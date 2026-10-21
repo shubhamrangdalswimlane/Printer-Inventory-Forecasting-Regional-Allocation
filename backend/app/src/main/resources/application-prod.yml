@@ -1,0 +1,41 @@
+# application-prod.yml - settings for production, activated with SPRING_PROFILES_ACTIVE=prod.
+# Everything here makes the safe choice the default; environment variables still supply hosts and secrets.
+
+spring:
+  flyway:
+    # Never let a migration silently clean or baseline a production database.
+    clean-disabled: true
+
+logging:
+  structured:
+    format:
+      # One JSON object per log line (Elastic Common Schema), so Loki/ELK can index fields such as the
+      # requestId put in the logging context by RequestIdFilter.
+      console: ecs
+  level:
+    root: INFO
+    com.pifa: INFO
+
+pifa:
+  synthetic:
+    enabled: false            # the generator must never run in production (a start-up guard also refuses it)
+  storage:
+    type: s3                  # disk is not shared between replicas
+  clamav:
+    enabled: true             # every file is virus-scanned (over TLS)
+  sftp:
+    strict-host-key: true     # the worker refuses an SFTP server whose host key is not in known_hosts
+  mail:
+    enabled: true
+
+server:
+  # Finish in-flight requests when Kubernetes stops a pod (rolling deploy, scale-down).
+  shutdown: graceful
+  error:
+    include-stacktrace: never
+    include-message: always   # our own messages are written for users; stack traces never leave the server
+
+management:
+  endpoint:
+    health:
+      show-details: never     # probes only need UP/DOWN

@@ -1,0 +1,258 @@
+# clamav.yaml - virus scanning for every uploaded and ingested file (architecture.md 12 "Malicious files").
+# Pod layout:
+#   init "freshclam-init" - downloads the signature database once, because clamd refuses to start without it.
+#   "clamd"               - the scanner, listening on 127.0.0.1:3310 ONLY (unencrypted, never leaves the pod).
+#   "freshclam"           - keeps signatures current and tells clamd to reload them.
+#   "tls"                 - socat terminating TLS on 3311 and forwarding to 127.0.0.1:3310. The only port the
+#                           Service exposes; same design as the clamav-tls service in infra/docker-compose.yml.
+# The image's own /init script needs root (it chowns and edits /etc), so the containers start clamd/freshclam
+# directly, as the image's unprivileged "clamav" user, with configuration files from the ConfigMap below.
+{{- if .Values.clamav.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pifa.fullname" . }}-clamav
+  labels:
+    {{- include "pifa.componentLabels" (dict "root" . "component" "clamav") | nindent 4 }}
+data:
+  clamd.conf: |
+    # clamd runs in the foreground as the container's main process. No LogFile: without one clamd logs to
+    # stderr, which the container runtime collects (LogFile /dev/stdout fails: clamd refuses symlinks).
+    Foreground yes
+    LogTime yes
+    LogClean no
+    # Plain TCP on loopback only: unreachable from other pods; the TLS sidecar is the only client.
+    TCPSocket 3310
+    TCPAddr 127.0.0.1
+    DatabaseDirectory /var/lib/clamav
+    TemporaryDirectory /tmp
+    # PIFA never sends more than 10 MB; reject anything larger instead of buffering it.
+    StreamMaxLength {{ .Values.clamav.streamMaxLength }}
+    # Office files are ZIP archives: scan inside them, and treat archives that hit limits as suspicious.
+    ScanArchive yes
+    ScanOLE2 yes
+    AlertExceedsMax yes
+    # Keep scanning with the old signatures while a new database loads (needs ~2x memory, see resources).
+    ConcurrentDatabaseReload yes
+  freshclam.conf: |
+    DatabaseDirectory /var/lib/clamav
+    # No UpdateLogFile: --stdout on the command line sends the log to the container output.
+    LogTime yes
+    DatabaseMirror {{ .Values.clamav.databaseMirror }}
+    # Tells clamd (through 127.0.0.1:3310 above) to reload after an update.
+    NotifyClamd /etc/clamav-pifa/clamd.conf
+  freshclam-init.conf: |
+    # First download only: no clamd to notify yet, and skip the slow test-load of the new database.
+    DatabaseDirectory /var/lib/clamav
+    LogTime yes
+    DatabaseMirror {{ .Values.clamav.databaseMirror }}
+    TestDatabases no
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pifa.fullname" . }}-clamav
+  labels:
+    {{- include "pifa.componentLabels" (dict "root" . "component" "clamav") | nindent 4 }}
+spec:
+  replicas: {{ .Values.clamav.replicas }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    # A new pod needs minutes (signature download + load); keep every old pod until it is ready.
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  selector:
+    matchLabels:
+      {{- include "pifa.selectorLabels" (dict "root" . "component" "clamav") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pifa.componentLabels" (dict "root" . "component" "clamav") | nindent 8 }}
+      annotations:
+        checksum/config: {{ toYaml .Values.clamav | sha256sum }}
+        {{- with .Values.clamav.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "pifa.fullname" . }}-clamav
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        # The image's "clamav" user, which owns its default directories.
+        runAsUser: {{ .Values.clamav.runAsUser }}
+        runAsGroup: {{ .Values.clamav.runAsGroup }}
+        fsGroup: {{ .Values.clamav.runAsGroup }}
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: freshclam-init
+          image: "{{ .Values.clamav.image.repository }}:{{ .Values.clamav.image.tag }}"
+          imagePullPolicy: {{ .Values.clamav.image.pullPolicy }}
+          command: ["freshclam", "--foreground", "--stdout", "--config-file=/etc/clamav-pifa/freshclam-init.conf"]
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.clamav.freshclamResources | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/clamav-pifa, readOnly: true }
+            - { name: db, mountPath: /var/lib/clamav }
+            - { name: tmp, mountPath: /tmp }
+      containers:
+        - name: clamd
+          image: "{{ .Values.clamav.image.repository }}:{{ .Values.clamav.image.tag }}"
+          imagePullPolicy: {{ .Values.clamav.image.pullPolicy }}
+          command: ["clamd", "--config-file=/etc/clamav-pifa/clamd.conf"]
+          # No containerPort: clamd binds to loopback only and must not be addressed from outside the pod.
+          # Exec probes, because a TCP probe from the kubelet cannot reach a loopback-only socket.
+          startupProbe:
+            exec: { command: ["clamdscan", "--config-file=/etc/clamav-pifa/clamd.conf", "--ping", "1"] }
+            periodSeconds: 10
+            timeoutSeconds: 5
+            # Loading ~350 MB of signatures takes 1-2 minutes; allow up to 5.
+            failureThreshold: 30
+          livenessProbe:
+            exec: { command: ["clamdscan", "--config-file=/etc/clamav-pifa/clamd.conf", "--ping", "1"] }
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            exec: { command: ["clamdscan", "--config-file=/etc/clamav-pifa/clamd.conf", "--ping", "1"] }
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.clamav.resources | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/clamav-pifa, readOnly: true }
+            - { name: db, mountPath: /var/lib/clamav }
+            - { name: tmp, mountPath: /tmp }
+        - name: freshclam
+          image: "{{ .Values.clamav.image.repository }}:{{ .Values.clamav.image.tag }}"
+          imagePullPolicy: {{ .Values.clamav.image.pullPolicy }}
+          command:
+            - freshclam
+            - --daemon
+            - --foreground
+            - --stdout
+            - --checks={{ .Values.clamav.freshclamChecksPerDay }}
+            - --config-file=/etc/clamav-pifa/freshclam.conf
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.clamav.freshclamResources | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/clamav-pifa, readOnly: true }
+            - { name: db, mountPath: /var/lib/clamav }
+            - { name: tmp, mountPath: /tmp }
+        - name: tls
+          image: "{{ .Values.clamav.tls.image.repository }}:{{ .Values.clamav.tls.image.tag }}"
+          imagePullPolicy: {{ .Values.clamav.tls.image.pullPolicy }}
+          # verify=0: clients are not asked for a certificate (the NetworkPolicy restricts who may connect).
+          # fork: one child per connection, so scans run in parallel.
+          args:
+            - OPENSSL-LISTEN:3311,fork,reuseaddr,cert=/tls/tls.crt,key=/tls/tls.key,verify=0,openssl-min-proto-version={{ .Values.clamav.tls.minProtocolVersion }}
+            - TCP:127.0.0.1:3310
+          ports:
+            - { name: clamav-tls, containerPort: 3311, protocol: TCP }
+          readinessProbe:
+            tcpSocket: { port: clamav-tls }
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: clamav-tls }
+            periodSeconds: 30
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.clamav.tls.resources | nindent 12 }}
+          volumeMounts:
+            - { name: tls, mountPath: /tls, readOnly: true }
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "pifa.fullname" . }}-clamav
+        # Signatures: re-downloaded per pod start. Not shared between pods, so no ReadWriteMany volume is needed.
+        - name: db
+          emptyDir: { sizeLimit: {{ .Values.clamav.databaseSizeLimit }} }
+        - name: tmp
+          emptyDir: { sizeLimit: 512Mi }
+        - name: tls
+          secret:
+            secretName: {{ .Values.secrets.clamavTls.name }}
+            defaultMode: 0440
+            items:
+              - { key: tls.crt, path: tls.crt }
+              - { key: tls.key, path: tls.key }
+      {{- with .Values.clamav.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.clamav.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      affinity:
+        {{- include "pifa.affinity" (dict "root" . "component" "clamav" "affinity" .Values.clamav.affinity) | nindent 8 }}
+      topologySpreadConstraints:
+        {{- include "pifa.topologySpread" (dict "root" . "component" "clamav") | nindent 8 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pifa.fullname" . }}-clamav
+  labels:
+    {{- include "pifa.componentLabels" (dict "root" . "component" "clamav") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "pifa.selectorLabels" (dict "root" . "component" "clamav") | nindent 4 }}
+  ports:
+    # TLS only. clamd's plain 3310 is deliberately not listed.
+    - { name: clamav-tls, port: 3311, targetPort: clamav-tls, protocol: TCP }
+{{- if .Values.clamav.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "pifa.fullname" . }}-clamav
+  labels:
+    {{- include "pifa.componentLabels" (dict "root" . "component" "clamav") | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.clamav.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "pifa.selectorLabels" (dict "root" . "component" "clamav") | nindent 6 }}
+{{- end }}
+{{- if .Values.clamav.tls.certManager.enabled }}
+---
+# Server certificate for the TLS sidecar, from an internal CA. The names cover every way the application may
+# address the Service (PIFA_CLAMAV_HOST defaults to the namespaced name).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "pifa.fullname" . }}-clamav
+  labels:
+    {{- include "pifa.componentLabels" (dict "root" . "component" "clamav") | nindent 4 }}
+spec:
+  secretName: {{ .Values.secrets.clamavTls.name }}
+  duration: {{ .Values.clamav.tls.certManager.duration }}
+  renewBefore: {{ .Values.clamav.tls.certManager.renewBefore }}
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    # A new key on every renewal.
+    rotationPolicy: Always
+  usages: [server auth]
+  dnsNames:
+    - {{ include "pifa.fullname" . }}-clamav
+    - {{ include "pifa.fullname" . }}-clamav.{{ .Release.Namespace }}.svc
+    - {{ include "pifa.fullname" . }}-clamav.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    {{- toYaml .Values.clamav.tls.certManager.issuerRef | nindent 4 }}
+{{- end }}
+{{- end }}

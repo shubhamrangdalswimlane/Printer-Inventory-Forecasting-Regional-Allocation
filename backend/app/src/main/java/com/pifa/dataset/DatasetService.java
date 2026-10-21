@@ -4,6 +4,7 @@ import com.pifa.audit.AuditService;
 import com.pifa.common.ApiException;
 import com.pifa.config.PifaProperties;
 import com.pifa.dataset.DatasetRepository.VersionRow;
+import com.pifa.allocation.StockService;
 import com.pifa.forecast.WorkingCopyService;
 import com.pifa.ingestion.ExcelFiles;
 import com.pifa.master.MasterDataService;
@@ -59,10 +60,12 @@ public class DatasetService {
     private final AuditService audit;
     private final PifaProperties props;
     private final WorkingCopyService workingCopy;
+    private final StockService stock;
 
     public DatasetService(DatasetRepository repo, MasterDataService master, JdbcClient jdbc, FileStore files,
-                          AuditService audit, PifaProperties props, WorkingCopyService workingCopy) {
+                          AuditService audit, PifaProperties props, WorkingCopyService workingCopy, StockService stock) {
         this.workingCopy = workingCopy;
+        this.stock = stock;
         this.repo = repo;
         this.master = master;
         this.jdbc = jdbc;
@@ -157,8 +160,10 @@ public class DatasetService {
             throw new ApiException(HttpStatus.CONFLICT, "CYCLE_LOCKED", "Cycle is in state " + state + "; this dataset can no longer be changed");
         }
         repo.activate(id);
-        // Re-activating a forecast rebuilds the working copy (edits are snapshotted first).
+        // Re-activating a forecast rebuilds the working copy (edits are snapshotted first);
+        // re-activating an inventory replaces the cycle's stock (reserves are kept).
         if (forecast) workingCopy.loadFromVersion(v.cycleId(), id, user.username());
+        else stock.applyInventory(v.cycleId(), id, user.username());
         audit.record(user.username(), "ACTIVATE", "dataset_version", id.toString(), Map.of("label", v.label(), "reason", reason));
     }
 

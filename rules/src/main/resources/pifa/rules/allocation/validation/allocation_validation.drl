@@ -1,0 +1,50 @@
+// =============================================================================
+// allocation_validation.drl  -  package pifa.rules.allocation.validation
+//
+// Purpose : check an allocation (proposed, Planner-edited, or after transfers) - PRD BR-VA-01..04.
+// Input   : ProductStock facts with classification already set, and AllocationLine facts (one per
+//           product x region, with that region's revised demand).
+// Output  : Violation objects (with the product id as subject) in the global list "violations".
+//           ERRORs block approval and finalization; WARNINGs are shown only.
+// =============================================================================
+package pifa.rules.allocation.validation;
+
+import com.pifa.rules.model.*;
+
+global java.util.List violations;
+
+// BR-VA-01 (ERROR): the regions of a product may not get more than its allocatable stock.
+rule "BR-VA-01 allocation exceeds allocatable stock"
+when
+    $s : ProductStock( $pid : productId, $max : allocatableQty, $name : productName )
+    accumulate( AllocationLine( productId == $pid, $q : qty ); $total : sum( $q ); $total > $max )
+then
+    violations.add( Violation.errorFor( "BR-VA-01", $pid, null,
+        $name + ": allocated " + $total + " exceeds allocatable " + $max ) );
+end
+
+// BR-VA-02 (ERROR): no negative quantities.
+rule "BR-VA-02 negative allocation"
+when
+    AllocationLine( qty < 0, $pid : productId, $r : region, $q : qty, $name : productName )
+then
+    violations.add( Violation.errorFor( "BR-VA-02", $pid, $r, $name + " / " + $r + ": negative quantity " + $q ) );
+end
+
+// BR-VA-03 (WARNING): a region gets more than it asked for.
+rule "BR-VA-03 allocation above demand"
+when
+    AllocationLine( qty > demand, $pid : productId, $r : region, $q : qty, $d : demand, $name : productName )
+then
+    violations.add( Violation.warningFor( "BR-VA-03", $pid, $r, $name + " / " + $r + ": allocated " + $q + " vs demand " + $d ) );
+end
+
+// BR-VA-04 (WARNING): on a constrained product one region gets nothing while another gets something.
+rule "BR-VA-04 region at zero on constrained product"
+when
+    ProductStock( classification == Classification.CONSTRAINED, $pid : productId )
+    AllocationLine( productId == $pid, qty == 0, demand > 0, $r : region, $name : productName )
+    exists AllocationLine( productId == $pid, qty > 0 )
+then
+    violations.add( Violation.warningFor( "BR-VA-04", $pid, $r, $name + " / " + $r + ": gets 0 while other regions get stock" ) );
+end

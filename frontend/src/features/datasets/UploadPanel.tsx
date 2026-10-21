@@ -39,7 +39,7 @@ export default function UploadPanel({ api, kind, onDone }: { api: Api; kind: 'fo
       <p className="muted">Excel (.xlsx), max 10 MB. Same validation as SFTP.{' '}
         <button className="link" onClick={() => api.template(kind).catch((e) => setError(e.message))}>Download blank template</button>
       </p>
-      <input ref={input} type="file" accept=".xlsx" disabled={busy} onChange={(e) => send(e.target.files?.[0])} />
+      <input ref={input} aria-label="Choose a file to upload" type="file" accept=".xlsx" disabled={busy} onChange={(e) => send(e.target.files?.[0])} />
       {busy && <p>Validating…</p>}
       {error && <p className="error">{error}</p>}
       {result?.status === 'VALID' && (

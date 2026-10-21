@@ -1,0 +1,69 @@
+// =============================================================================
+// transfer.drl  -  package pifa.rules.transfer
+//
+// Purpose : validate a transfer of units between regions (PRD BR-TR-01..04).
+// Input   : one TransferCheck fact.
+// Output  : Violation objects in the global list "violations"; any ERROR refuses the transfer.
+// =============================================================================
+package pifa.rules.transfer;
+
+import com.pifa.rules.model.*;
+
+global java.util.List violations;
+
+// BR-TR-01 (ERROR): quantity must be a positive whole number ...
+rule "BR-TR-01 quantity must be positive"
+when
+    TransferCheck( qty <= 0, $pid : productId )
+then
+    violations.add( Violation.errorFor( "BR-TR-01", $pid, null, "Transfer quantity must be a positive whole number" ) );
+end
+
+// ... and no more than the donor can spare (its allocation minus the floor).
+rule "BR-TR-01 donor cannot spare that much"
+when
+    TransferCheck( qty > 0, qty > donorSpare, $pid : productId, $from : fromRegion, $q : qty, $spare : donorSpare, $name : productName )
+then
+    violations.add( Violation.errorFor( "BR-TR-01", $pid, $from,
+        $name + ": " + $from + " can give at most " + $spare + " units, not " + $q ) );
+end
+
+// BR-TR-01 (ERROR): donor and receiver must be different regions.
+rule "BR-TR-01 same region"
+when
+    TransferCheck( sameRegion == true, $pid : productId )
+then
+    violations.add( Violation.errorFor( "BR-TR-01", $pid, null, "Donor and receiving region must be different" ) );
+end
+
+// BR-TR-02 (ERROR): the model total must not change (true by construction; re-checked as a safety net).
+rule "BR-TR-02 model total must not change"
+when
+    TransferCheck( modelTotalAfter != modelTotalBefore, $pid : productId, $b : modelTotalBefore, $a : modelTotalAfter )
+then
+    violations.add( Violation.errorFor( "BR-TR-02", $pid, null, "Model total would change from " + $b + " to " + $a ) );
+end
+
+// BR-TR-03 (ERROR): a finalized region can be neither donor nor receiver.
+rule "BR-TR-03 donor finalized"
+when
+    TransferCheck( donorFinalized == true, $pid : productId, $r : fromRegion )
+then
+    violations.add( Violation.errorFor( "BR-TR-03", $pid, $r, $r + " is finalized; un-finalize it first" ) );
+end
+
+rule "BR-TR-03 receiver finalized"
+when
+    TransferCheck( receiverFinalized == true, $pid : productId, $r : toRegion )
+then
+    violations.add( Violation.errorFor( "BR-TR-03", $pid, $r, $r + " is finalized; un-finalize it first" ) );
+end
+
+// BR-TR-04 (WARNING): the receiver would end up above its revised demand.
+rule "BR-TR-04 receiver above demand"
+when
+    TransferCheck( (receiverAllocation + qty) > receiverDemand, $pid : productId, $r : toRegion, $d : receiverDemand, $ra : receiverAllocation, $q : qty, $name : productName )
+then
+    violations.add( Violation.warningFor( "BR-TR-04", $pid, $r,
+        $name + ": " + $r + " would get " + ($ra + $q) + " vs demand " + $d ) );
+end

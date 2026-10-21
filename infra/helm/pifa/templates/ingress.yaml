@@ -1,0 +1,73 @@
+# ingress.yaml - public entry point. Two Ingress objects for the same host (the ingress controller merges them):
+#   /api -> api Service, port "http" (8080), with the API rate limit and the 11 MB upload limit
+#   /    -> web Service, port "http" (8080), with a looser limit for static files
+# The management port 9091 (health, metrics) is never referenced here, so it cannot be reached from outside.
+# X-Request-Id: ingress-nginx passes "X-Request-ID: $req_id" to the backends by default (see values.yaml
+# ingress.requestIdSnippet), and the API's RequestIdFilter puts it into every log line and error response.
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "pifa.fullname" . }}-api
+  labels:
+    {{- include "pifa.componentLabels" (dict "root" . "component" "api") | nindent 4 }}
+  annotations:
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.ingress.apiAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if .Values.ingress.requestIdSnippet }}
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Request-Id: $req_id";
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  tls:
+    - hosts: [{{ .Values.ingress.host | quote }}]
+      secretName: {{ .Values.ingress.tlsSecretName }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "pifa.fullname" . }}-api
+                port: { name: http }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "pifa.fullname" . }}-web
+  labels:
+    {{- include "pifa.componentLabels" (dict "root" . "component" "web") | nindent 4 }}
+  annotations:
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with .Values.ingress.webAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if .Values.ingress.requestIdSnippet }}
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Request-Id: $req_id";
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  tls:
+    - hosts: [{{ .Values.ingress.host | quote }}]
+      secretName: {{ .Values.ingress.tlsSecretName }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "pifa.fullname" . }}-web
+                port: { name: http }
+{{- end }}

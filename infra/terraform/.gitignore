@@ -1,0 +1,20 @@
+# Purpose: keep Terraform working files and state out of Git.
+# State lives in the remote S3 backend (see aws/backend.tf); local state and provider caches are never committed.
+#
+# Note: *.tfvars files are NOT ignored on purpose. The example files under aws/envs/ contain no secrets
+# (only sizes, CIDRs, public SSH keys and example.com names). Secrets are never put in tfvars: they are
+# set out of band in AWS Secrets Manager, or passed to CI as TF_VAR_* environment variables.
+# Local overrides that might contain secrets use the *.auto.tfvars / *.local.tfvars names below.
+
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+*.local.tfvars
+*.auto.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json

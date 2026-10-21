@@ -45,6 +45,17 @@
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-actuator</artifactId>
     </dependency>
+    <!-- Prometheus metrics endpoint (/actuator/prometheus on the internal management port). -->
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus</artifactId>
+    </dependency>
+    <!-- AWS SDK v2 S3 client: the object store for original files (AWS S3 or MinIO); see S3FileStore. -->
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>s3</artifactId>
+      <version>2.29.6</version>
+    </dependency>
     <!-- JPA/Hibernate for database access (used from Phase 1). -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
@@ -59,11 +70,10 @@
       <groupId>org.flywaydb</groupId>
       <artifactId>flyway-database-postgresql</artifactId>
     </dependency>
-    <!-- PostgreSQL JDBC driver; runtime scope = needed to run, not to compile. -->
+    <!-- PostgreSQL JDBC driver. Compile scope because LiveEvents uses its LISTEN/NOTIFY API (PGConnection). -->
     <dependency>
       <groupId>org.postgresql</groupId>
       <artifactId>postgresql</artifactId>
-      <scope>runtime</scope>
     </dependency>
     <!-- JavaMail support for notification e-mails (sent from the outbox). -->
     <dependency>
@@ -99,6 +109,13 @@
     <dependency>
       <groupId>org.springframework.security</groupId>
       <artifactId>spring-security-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- jqwik: property-based tests (random inputs, checked invariants) for the allocation arithmetic. -->
+    <dependency>
+      <groupId>net.jqwik</groupId>
+      <artifactId>jqwik</artifactId>
+      <version>1.9.2</version>
       <scope>test</scope>
     </dependency>
   </dependencies>

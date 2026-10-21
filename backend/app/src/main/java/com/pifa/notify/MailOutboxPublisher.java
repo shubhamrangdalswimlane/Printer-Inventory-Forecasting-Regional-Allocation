@@ -30,8 +30,13 @@ public class MailOutboxPublisher {
     private final JdbcClient jdbc;
     private final JavaMailSender mail;
     private final PifaProperties props;
+    @org.springframework.beans.factory.annotation.Value("${pifa.jobs.enabled:true}")
+    private boolean jobsEnabled = true;
 
-    public MailOutboxPublisher(JdbcClient jdbc, JavaMailSender mail, PifaProperties props) {
+    private final org.springframework.transaction.support.TransactionTemplate tx;
+
+    public MailOutboxPublisher(JdbcClient jdbc, JavaMailSender mail, PifaProperties props, org.springframework.transaction.support.TransactionTemplate tx) {
+        this.tx = tx;
         this.jdbc = jdbc;
         this.mail = mail;
         this.props = props;
@@ -40,6 +45,7 @@ public class MailOutboxPublisher {
     /** Scheduled entry point (every 30 s). Never throws. */
     @Scheduled(fixedDelay = 30_000, initialDelay = 30_000)
     public void scheduledSend() {
+        if (!jobsEnabled) return; // only worker pods send mail
         try {
             sendPending();
         } catch (RuntimeException e) {
@@ -53,7 +59,16 @@ public class MailOutboxPublisher {
      * @return number of mails sent successfully in this run
      */
     public int sendPending() {
-        List<Pending> rows = jdbc.sql("SELECT id, target_role, target_region, subject, body FROM outbox_event WHERE sent_at IS NULL AND attempts < 5 ORDER BY id LIMIT 100")
+        // One transaction per batch. FOR UPDATE SKIP LOCKED: with two worker replicas, each claims different rows,
+        // so no mail is sent twice and neither waits for the other.
+        Integer result = tx.execute(status -> sendBatch());
+        return result == null ? 0 : result;
+    }
+
+    /** Claims up to 100 unsent rows (locked until commit), sends them, stamps them. Runs inside a transaction. */
+    private int sendBatch() {
+        List<Pending> rows = jdbc.sql("SELECT id, target_role, target_region, subject, body FROM outbox_event WHERE sent_at IS NULL AND attempts < 5 "
+                + "ORDER BY id LIMIT 100 FOR UPDATE SKIP LOCKED")
             .query((rs, n) -> new Pending(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5))).list();
         int sent = 0;
         for (Pending p : rows) {

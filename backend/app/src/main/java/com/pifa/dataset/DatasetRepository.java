@@ -198,10 +198,16 @@ public class DatasetRepository {
         return spec.query(DatasetRepository::map).list();
     }
 
-    /** @param versionId a snapshot version @return true if any later snapshot names it as its parent (it is "referenced") */
+    /**
+     * @param versionId a version
+     * @return true if anything depends on it: a later snapshot names it as its parent, an allocation
+     *         snapshot was computed from it (inventory), or a cycle's stock still comes from it
+     */
     public boolean isReferenced(UUID versionId) {
-        return jdbc.sql("SELECT EXISTS (SELECT 1 FROM dataset_version WHERE parent_version_id = :id)")
-            .param("id", versionId).query(Boolean.class).single();
+        return jdbc.sql("""
+                SELECT EXISTS (SELECT 1 FROM dataset_version WHERE parent_version_id = :id OR inventory_version_id = :id)
+                    OR EXISTS (SELECT 1 FROM plan_product_stock WHERE inventory_version_id = :id)
+                """).param("id", versionId).query(Boolean.class).single();
     }
 
     /** Marks a version DELETED (soft delete) and records who, when and why. */

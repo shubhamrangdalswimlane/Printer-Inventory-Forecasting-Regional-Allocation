@@ -1,6 +1,12 @@
 package com.pifa.workflow;
 
+import com.pifa.allocation.AllocationService;
+import com.pifa.allocation.TransferService;
+import com.pifa.events.LiveEvents;
 import com.pifa.audit.AuditService;
+import com.pifa.parameters.RuleParameterService;
+import com.pifa.rules.model.WorkflowCheck;
+import java.util.Optional;
 import com.pifa.common.ApiException;
 import com.pifa.config.PifaProperties;
 import com.pifa.dataset.DatasetRepository;
@@ -53,7 +59,13 @@ public class CycleWorkflowService {
      * @param rowVersion     optional: the cycle row version the client last saw; a mismatch gives 409
      * @param reviewDeadline optional: for PUBLISH, when regional review must be finished
      */
-    public record TransitionRequest(String action, String region, List<String> regions, String comment, Long rowVersion, OffsetDateTime reviewDeadline) {}
+    public record TransitionRequest(String action, String region, List<String> regions, String comment, Long rowVersion,
+                                    OffsetDateTime reviewDeadline, OffsetDateTime finalizeDeadline) {
+        /** Convenience constructor without a finalize deadline (all actions except APPROVE_ALLOCATION). */
+        public TransitionRequest(String action, String region, List<String> regions, String comment, Long rowVersion, OffsetDateTime reviewDeadline) {
+            this(action, region, regions, comment, rowVersion, reviewDeadline, null);
+        }
+    }
 
     /** The cycle row. */
     public record CycleRow(UUID id, String month, String state, long rowVersion, OffsetDateTime reviewDeadline, OffsetDateTime finalizeDeadline) {}
@@ -71,9 +83,21 @@ public class CycleWorkflowService {
     private final ForecastValidationService validation;
     private final NotificationService notifications;
     private final PifaProperties props;
+    private final RuleParameterService params;
+    private final AllocationService allocation;
+    private final TransferService transfers;
+    private final LiveEvents events;
+    private final com.pifa.ops.PifaMetrics metrics;
 
     public CycleWorkflowService(JdbcClient jdbc, DatasetRepository repo, AuditService audit, RulesFacade rules,
-                                ForecastValidationService validation, NotificationService notifications, PifaProperties props) {
+                                ForecastValidationService validation, NotificationService notifications, PifaProperties props,
+                                RuleParameterService params, AllocationService allocation, TransferService transfers, LiveEvents events,
+                                com.pifa.ops.PifaMetrics metrics) {
+        this.metrics = metrics;
+        this.transfers = transfers;
+        this.events = events;
+        this.params = params;
+        this.allocation = allocation;
         this.jdbc = jdbc;
         this.repo = repo;
         this.audit = audit;
@@ -104,10 +128,11 @@ public class CycleWorkflowService {
     public Map<String, Object> permissions(UUID id, CurrentUser user) {
         CycleRow c = find(id);
         Map<String, String> reviews = new LinkedHashMap<>();
-        regionStatuses(id).forEach(r -> reviews.put(r.region(), r.reviewStatus()));
-        Map<String, Object> p = new LinkedHashMap<>(EditPolicy.permissions(user, c.state(), reviews));
+        Map<String, String> finals = new LinkedHashMap<>();
+        regionStatuses(id).forEach(r -> { reviews.put(r.region(), r.reviewStatus()); finals.put(r.region(), r.finalizeStatus()); });
+        Map<String, Object> p = new LinkedHashMap<>(EditPolicy.permissions(user, c.state(), reviews, finals));
         // The UI needs the change-control threshold to know when a reason field is required.
-        p.put("changeThresholdPct", props.forecast().changeThresholdPct());
+        p.put("changeThresholdPct", params.current().values().changeThresholdPct());
         return p;
     }
 
@@ -136,8 +161,15 @@ public class CycleWorkflowService {
             case "SUBMIT_REGION" -> submitRegion(cycle, req, user);
             case "PROCEED" -> proceed(cycle, req, user);
             case "RETURN_REGIONS" -> returnRegions(cycle, req, user);
+            case "APPROVE_ALLOCATION" -> approveAllocation(cycle, req, user);
+            case "REOPEN_ALLOCATION" -> reopenAllocation(cycle, req, user);
+            case "FINALIZE_REGION" -> finalizeRegion(cycle, req, user);
+            case "UNFINALIZE_REGION" -> unfinalizeRegion(cycle, req, user);
+            case "REOPEN_CYCLE" -> reopenCycle(cycle, req, user);
             default -> throw new ApiException(HttpStatus.BAD_REQUEST, "BAD_ACTION", "Unknown action '" + req.action() + "'");
         }
+        events.publish(cycleId, "TRANSITION"); // delivered to open dashboards when this transaction commits
+        metrics.transition(action);
         return detail(cycleId);
     }
 
@@ -197,7 +229,8 @@ public class CycleWorkflowService {
                 WHERE l.cycle_id = :c AND l.region_code = :r AND l.revised_qty IS NOT NULL AND l.revised_qty <> l.published_qty
                 """).param("c", c.id()).param("r", region)
             .query((rs, n) -> changes.add(new ForecastChange(rs.getString(1), region, rs.getInt(2), rs.getInt(3), rs.getString(4)))).list();
-        guard(rules.validateForecast(changes, new ForecastConfig(props.forecast().changeThresholdPct(), props.ingestion().spikeFactor(), props.ingestion().maxQty())));
+        var pv = params.current().values();
+        guard(rules.validateForecast(changes, new ForecastConfig(pv.changeThresholdPct(), pv.spikeFactor(), props.ingestion().maxQty())));
 
         jdbc.sql("UPDATE cycle_region_status SET review_status = 'SUBMITTED', actor = :a, updated_at = now() WHERE cycle_id = :c AND region_code = :r")
             .param("a", user.username()).param("c", c.id()).param("r", region).update();
@@ -210,6 +243,7 @@ public class CycleWorkflowService {
         boolean allIn = regionStatuses(c.id()).stream().allMatch(r -> "SUBMITTED".equals(r.reviewStatus()));
         if (allIn) {
             snapshot(c, DatasetType.FORECAST_REVISED, "ALL", published, "COALESCE(revised_qty, published_qty)", null, "FCR", user);
+            markProposalStale(c);
             setState(c, "PLANNING", "ALL_SUBMITTED", null, user, null);
             notifications.notifyRole("planner", null, "All regions submitted for " + c.month(), "The consolidated revised forecast is ready for planning.", c.id());
         }
@@ -226,7 +260,153 @@ public class CycleWorkflowService {
         UUID published = repo.latestVersionId(c.id(), DatasetType.FORECAST_PUBLISHED).orElse(null);
         // Regions that did not submit still hold revised = published (or their unsubmitted edits); the audit trail records this.
         snapshot(c, DatasetType.FORECAST_REVISED, "ALL", published, "COALESCE(revised_qty, published_qty)", null, "FCR", user);
+        markProposalStale(c);
         setState(c, "PLANNING", "PROCEED_AFTER_DEADLINE", null, user, req.comment());
+    }
+
+    /**
+     * PLANNING -> REGIONAL_FINALIZATION: the Planner approves the allocation (PRD FR-PL-05, BR-WF-02).
+     *
+     * <p>Guard: an active inventory version, a generated proposal, and no BR-VA-01/02 errors in the
+     * approved numbers. Effects: immutable {@code ALLOCATION_APPROVED} snapshot stamped with the ruleset and
+     * rule-parameter versions and the inventory version used; the final column starts as a copy of the
+     * approved one; every region opens for finalization; Regional Managers are notified.
+     */
+    private void approveAllocation(CycleRow c, TransitionRequest req, CurrentUser user) {
+        requireRole(user, "planner");
+        requireState(c, "PLANNING");
+        Optional<UUID> inventory = repo.activeVersionId(c.id(), DatasetType.INVENTORY_UPLOAD);
+        boolean hasProposal = jdbc.sql("SELECT proposal_at IS NOT NULL FROM planning_cycle WHERE id = :c").param("c", c.id()).query(Boolean.class).single();
+        guard(rules.checkWorkflow(new WorkflowCheck("APPROVE_ALLOCATION", null, inventory.isPresent(), hasProposal,
+            allocation.errorCount(c.id(), "APPROVED"), 0, false)));
+
+        UUID revised = jdbc.sql("SELECT id FROM dataset_version WHERE cycle_id = :c AND type = 'FORECAST_REVISED' AND scope = 'ALL' ORDER BY version_no DESC LIMIT 1")
+            .param("c", c.id()).query(UUID.class).optional().orElse(null);
+        UUID snap = allocationSnapshot(c, DatasetType.ALLOCATION_APPROVED, "approved_alloc_qty", "ALA", revised, inventory.orElse(null), user);
+        jdbc.sql("UPDATE plan_line SET final_alloc_qty = approved_alloc_qty, row_version = row_version + 1 WHERE cycle_id = :c").param("c", c.id()).update();
+        jdbc.sql("UPDATE cycle_region_status SET finalize_status = 'OPEN', actor = :a, updated_at = now() WHERE cycle_id = :c")
+            .param("a", user.username()).param("c", c.id()).update();
+        jdbc.sql("UPDATE planning_cycle SET finalize_deadline = :d WHERE id = :c").param("d", req.finalizeDeadline()).param("c", c.id()).update();
+        setState(c, "REGIONAL_FINALIZATION", "APPROVE_ALLOCATION", null, user, req.comment());
+        for (String region : activeRegions()) {
+            notifications.notifyRole("regional_manager", region, "Allocation approved for " + c.month(),
+                "The Planner approved the allocation (" + repo.findVersion(snap).orElseThrow().label() + "). Review it, agree any transfers and finalize your region."
+                    + (req.finalizeDeadline() == null ? "" : " Deadline: " + req.finalizeDeadline() + "."), c.id());
+        }
+    }
+
+    /**
+     * Creates an immutable allocation snapshot ({@code allocation_line}) from one column of the working
+     * copy, stamped with the ruleset version, the parameter version of the current proposal and the
+     * inventory version behind it.
+     *
+     * @return the new version id
+     */
+    private UUID allocationSnapshot(CycleRow c, DatasetType type, String column, String prefix, UUID parent, UUID inventoryVersion, CurrentUser user) {
+        UUID id = UUID.randomUUID();
+        int no = repo.nextVersionNo(c.id(), type);
+        repo.insertSnapshot(id, c.id(), type, no, prefix + "-" + c.month() + "-v" + no, "ALL", parent, 0, user.username());
+        Integer paramVersion = jdbc.sql("SELECT proposal_parameter_version FROM planning_cycle WHERE id = :c").param("c", c.id()).query(Integer.class).optional().orElse(null);
+        jdbc.sql("UPDATE dataset_version SET ruleset_version = :r, parameter_version = :p, inventory_version_id = :i WHERE id = :id")
+            .param("r", RulesFacade.RULESET_VERSION).param("p", paramVersion).param("i", inventoryVersion).param("id", id).update();
+        int rows = jdbc.sql("INSERT INTO allocation_line (version_id, product_id, region_code, qty) SELECT :v, product_id, region_code, COALESCE(" + column
+                + ", 0) FROM plan_line WHERE cycle_id = :c").param("v", id).param("c", c.id()).update();
+        jdbc.sql("UPDATE dataset_version SET row_count = :n WHERE id = :id").param("n", rows).param("id", id).update();
+        return id;
+    }
+
+    /**
+     * REGIONAL_FINALIZATION -> PLANNING: the Planner takes the allocation back (PRD FR-PL-08). Pending
+     * transfers are cancelled, the final column is cleared (it is rebuilt at the next approval) and every
+     * region reopens. Comment mandatory.
+     */
+    private void reopenAllocation(CycleRow c, TransitionRequest req, CurrentUser user) {
+        requireRole(user, "planner");
+        requireState(c, "REGIONAL_FINALIZATION");
+        requireComment(req);
+        int cancelled = transfers.cancelAllPending(c.id(), user, "allocation reopened: " + req.comment());
+        jdbc.sql("UPDATE plan_line SET final_alloc_qty = NULL, row_version = row_version + 1 WHERE cycle_id = :c").param("c", c.id()).update();
+        jdbc.sql("UPDATE cycle_region_status SET finalize_status = 'OPEN', actor = :a, updated_at = now() WHERE cycle_id = :c")
+            .param("a", user.username()).param("c", c.id()).update();
+        setState(c, "PLANNING", "REOPEN_ALLOCATION", null, user, req.comment() + (cancelled > 0 ? " (" + cancelled + " pending transfer(s) cancelled)" : ""));
+        notifications.notifyRole("regional_manager", null, "Allocation reopened for " + c.month(), "The Planner reopened the allocation: " + req.comment(), c.id());
+    }
+
+    /**
+     * Region OPEN -> FINALIZED (BR-WF-03: no pending transfers for the region). When the last region
+     * finalizes and the cycle guard passes, the cycle becomes FINAL with an immutable ALLOCATION_FINAL snapshot.
+     */
+    private void finalizeRegion(CycleRow c, TransitionRequest req, CurrentUser user) {
+        String region = requireOwnRegion(c, req, user, "REGIONAL_FINALIZATION");
+        String status = finalizeStatus(c.id(), region);
+        if ("FINALIZED".equals(status)) throw new ApiException(HttpStatus.CONFLICT, "ALREADY_FINALIZED", region + " is already finalized");
+        guard(rules.checkWorkflow(new WorkflowCheck("FINALIZE_REGION", region, true, true, 0, transfers.pendingFor(c.id(), region), false)));
+        jdbc.sql("UPDATE cycle_region_status SET finalize_status = 'FINALIZED', actor = :a, updated_at = now() WHERE cycle_id = :c AND region_code = :r")
+            .param("a", user.username()).param("c", c.id()).param("r", region).update();
+        eventOnly(c, "FINALIZE_REGION", region, user, req.comment());
+        notifications.notifyRole("planner", null, region + " finalized " + c.month(), "Region " + region + " finalized its allocation.", c.id());
+
+        boolean all = regionStatuses(c.id()).stream().allMatch(r -> "FINALIZED".equals(r.finalizeStatus()));
+        if (all) {
+            List<Violation> blocking = rules.checkWorkflow(new WorkflowCheck("FINAL", null, true, true,
+                allocation.errorCount(c.id(), "FINAL"), transfers.pendingInCycle(c.id()), true));
+            if (blocking.isEmpty()) {
+                UUID approved = repo.latestVersionId(c.id(), DatasetType.ALLOCATION_APPROVED).orElse(null);
+                UUID inventory = approved == null ? null
+                    : jdbc.sql("SELECT inventory_version_id FROM dataset_version WHERE id = :v").param("v", approved).query(UUID.class).optional().orElse(null);
+                allocationSnapshot(c, DatasetType.ALLOCATION_FINAL, "final_alloc_qty", "ALF", approved, inventory, user);
+                setState(c, "FINAL", "ALL_FINALIZED", null, user, null);
+                for (String role : List.of("forecaster", "planner", "admin", "regional_manager")) {
+                    notifications.notifyRole(role, null, "Cycle " + c.month() + " is FINAL", "Every region finalized; the allocation is locked.", c.id());
+                }
+            }
+        }
+    }
+
+    /** Region FINALIZED -> OPEN while the cycle is not FINAL (PRD FR-RM-08). */
+    private void unfinalizeRegion(CycleRow c, TransitionRequest req, CurrentUser user) {
+        String region = requireOwnRegion(c, req, user, "REGIONAL_FINALIZATION");
+        if (!"FINALIZED".equals(finalizeStatus(c.id(), region))) throw new ApiException(HttpStatus.CONFLICT, "NOT_FINALIZED", region + " is not finalized");
+        jdbc.sql("UPDATE cycle_region_status SET finalize_status = 'OPEN', actor = :a, updated_at = now() WHERE cycle_id = :c AND region_code = :r")
+            .param("a", user.username()).param("c", c.id()).param("r", region).update();
+        eventOnly(c, "UNFINALIZE_REGION", region, user, req.comment());
+    }
+
+    /**
+     * FINAL -> REGIONAL_FINALIZATION: Admin reopens a locked cycle so the owning roles can correct it
+     * (PRD FR-AD-08). Reason mandatory; audited with high severity; everyone is notified.
+     */
+    private void reopenCycle(CycleRow c, TransitionRequest req, CurrentUser user) {
+        requireRole(user, "admin");
+        requireState(c, "FINAL");
+        requireComment(req);
+        jdbc.sql("UPDATE cycle_region_status SET finalize_status = 'OPEN', actor = :a, updated_at = now() WHERE cycle_id = :c")
+            .param("a", user.username()).param("c", c.id()).update();
+        setState(c, "REGIONAL_FINALIZATION", "REOPEN_CYCLE", null, user, req.comment());
+        audit.record(user.username(), "SECURITY_HIGH_SEVERITY", "planning_cycle", c.id().toString(), Map.of("event", "FINAL cycle reopened", "reason", req.comment()));
+        for (String role : List.of("forecaster", "planner", "admin", "regional_manager")) {
+            notifications.notifyRole(role, null, "Cycle " + c.month() + " reopened by Admin", req.comment(), c.id());
+        }
+    }
+
+    /** Checks a region action: valid region, caller manages it (Regional Manager), cycle in the given state. */
+    private String requireOwnRegion(CycleRow c, TransitionRequest req, CurrentUser user, String state) {
+        String region = req.region() == null ? "" : req.region().toUpperCase(Locale.ROOT);
+        if (!activeRegions().contains(region)) throw new ApiException(HttpStatus.BAD_REQUEST, "BAD_REGION", "Unknown region '" + req.region() + "'");
+        if (!user.has("regional_manager")) throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "Only a Regional Manager may do this");
+        if (!user.inRegion(region)) throw new ApiException(HttpStatus.FORBIDDEN, "REGION_FORBIDDEN", "You may only act for your own region(s)");
+        requireState(c, state);
+        return region;
+    }
+
+    private String finalizeStatus(UUID cycleId, String region) {
+        return jdbc.sql("SELECT finalize_status FROM cycle_region_status WHERE cycle_id = :c AND region_code = :r").param("c", cycleId).param("r", region)
+            .query(String.class).optional().orElse(null);
+    }
+
+    /** New regional numbers arrived after a proposal was made: the Planner must re-run it (PRD FR-PL-09). */
+    private void markProposalStale(CycleRow c) {
+        jdbc.sql("UPDATE planning_cycle SET allocation_stale = TRUE WHERE id = :c AND proposal_at IS NOT NULL").param("c", c.id()).update();
     }
 
     /** PLANNING -> REGIONAL_REVIEW: send selected regions back for rework. */

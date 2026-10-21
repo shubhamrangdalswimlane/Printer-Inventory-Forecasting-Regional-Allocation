@@ -56,26 +56,74 @@ services:
   # into both the producer home and the worker home, so a producer upload is visible to the worker.
   sftp:
     image: atmoz/sftp
+    depends_on:
+      sftp-init: { condition: service_completed_successfully }
     command:
       - sftp-forecast:forecast-dev:1001:100:inbound/forecast,outbound/errors
       - sftp-inventory:inventory-dev:1002:100:inbound/inventory,outbound/errors
-      - pifa-worker:worker-dev:1000:100:inbound/forecast,inbound/inventory,outbound/errors,archive
+      - sftp-sales:sales-dev:1003:100:inbound/sales,outbound/errors
+      - pifa-worker:worker-dev:1000:100:inbound/forecast,inbound/inventory,inbound/sales,outbound/errors,archive
     ports: ["2222:22"]           # host port 2222 so it does not clash with a local SSH server
     volumes:
       - forecast-drop:/home/sftp-forecast/inbound/forecast
       - forecast-drop:/home/pifa-worker/inbound/forecast
       - inventory-drop:/home/sftp-inventory/inbound/inventory
       - inventory-drop:/home/pifa-worker/inbound/inventory
+      - sales-drop:/home/sftp-sales/inbound/sales
+      - sales-drop:/home/pifa-worker/inbound/sales
       - error-reports:/home/sftp-forecast/outbound/errors
       - error-reports:/home/sftp-inventory/outbound/errors
+      - error-reports:/home/sftp-sales/outbound/errors
       - error-reports:/home/pifa-worker/outbound/errors
       - archive:/home/pifa-worker/archive
-      - ./sftp/permissions.sh:/etc/sftp.d/permissions.sh:ro   # makes the shared folders group-writable
 
-  # ClamAV antivirus daemon; the ingestion pipeline (Phase 1) streams uploaded files to port 3310.
+  # One-shot job that makes the shared SFTP volumes writable for every account (they have different
+  # uids). It runs BEFORE the sftp service starts and does not depend on file permission bits of the
+  # repository checkout (an earlier shell script did, and was silently skipped on a Linux CI runner,
+  # which gave "Permission denied" on upload). Local development only.
+  sftp-init:
+    image: busybox
+    command: ["sh", "-c", "chmod -R 777 /drops"]
+    volumes:
+      - forecast-drop:/drops/forecast
+      - inventory-drop:/drops/inventory
+      - sales-drop:/drops/sales
+      - error-reports:/drops/errors
+      - archive:/drops/archive
+
+  # ClamAV antivirus daemon. clamd speaks plain TCP, so it is NOT published to the host: only the TLS
+  # terminator below (clamav-tls) can reach it, and the application only ever connects over TLS.
   clamav:
     image: clamav/clamav:stable
-    ports: ["3310:3310"]
+
+  # One-shot job: creates a self-signed certificate for the TLS terminator (development only; production
+  # uses a certificate from the organisation CA). The certificate is valid for the names clamav-tls,
+  # localhost and 127.0.0.1, so the client's host-name check passes for either. ca.pem is what the
+  # application trusts (PIFA_CLAMAV_CA_CERT); server.key never leaves the shared volume.
+  clamav-cert:
+    image: alpine/openssl
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        [ -s /certs/server.crt ] || {
+          openssl req -x509 -newkey rsa:2048 -nodes -days 365 -subj "/CN=clamav-tls" \
+            -addext "subjectAltName=DNS:clamav-tls,DNS:localhost,IP:127.0.0.1" \
+            -keyout /certs/server.key -out /certs/server.crt
+          cp /certs/server.crt /certs/ca.pem
+          chmod 644 /certs/server.crt /certs/ca.pem /certs/server.key
+        }
+    volumes: [clamav-certs:/certs]
+
+  # TLS terminator in front of clamd: accepts TLS on 3311 and forwards the plain stream to clamd on the
+  # internal compose network. Published on 3311 for the application and the tests.
+  clamav-tls:
+    image: alpine/socat
+    command: ["OPENSSL-LISTEN:3311,fork,reuseaddr,cert=/certs/server.crt,key=/certs/server.key,verify=0", "TCP:clamav:3310"]
+    ports: ["3311:3311"]
+    volumes: [clamav-certs:/certs:ro]
+    depends_on:
+      clamav-cert: { condition: service_completed_successfully }
+      clamav: { condition: service_started }
 
   # Mailpit: a fake SMTP server that catches outgoing emails. SMTP on :1025, inbox UI on :8025.
   mailpit:
@@ -88,5 +136,7 @@ volumes:
   miniodata:
   forecast-drop:      # shared SFTP drop folder for forecast files
   inventory-drop:     # shared SFTP drop folder for inventory files
+  sales-drop:         # shared SFTP drop folder for the monthly sales feed (Phase 7)
   error-reports:      # error CSVs written by the worker, readable by the producers
   archive:            # processed files moved here by the worker
+  clamav-certs:       # self-signed certificate of the ClamAV TLS terminator (development only)

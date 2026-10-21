@@ -249,11 +249,15 @@ public class SyntheticDataService {
     @Transactional
     public int purgeAll(CurrentUser user) {
         requireEnabled();
-        // Cycles that hold no real (non-synthetic) upload are removed completely, including their working
-        // copy, snapshots, change log and workflow history.
+        // A cycle that contains ANY synthetic upload is removed completely (working copy, snapshots, change
+        // log, workflow history), as is a cycle with no upload at all. Synthetic and real numbers cannot be
+        // separated once they were combined in one working copy, snapshot or allocation, so a cycle is
+        // either entirely real or it goes. The generator is blocked in production, so a real cycle never
+        // contains synthetic data there.
         List<UUID> syntheticCycles = jdbc.sql("""
-                SELECT c.id FROM planning_cycle c WHERE NOT EXISTS (
-                    SELECT 1 FROM dataset_version v WHERE v.cycle_id = c.id AND v.type IN ('FORECAST_UPLOAD', 'INVENTORY_UPLOAD') AND v.source <> 'SYNTHETIC')
+                SELECT c.id FROM planning_cycle c
+                WHERE EXISTS (SELECT 1 FROM dataset_version v WHERE v.cycle_id = c.id AND v.source = 'SYNTHETIC')
+                   OR NOT EXISTS (SELECT 1 FROM dataset_version v WHERE v.cycle_id = c.id AND v.type IN ('FORECAST_UPLOAD', 'INVENTORY_UPLOAD'))
                 """).query(UUID.class).list();
         List<String> keys = jdbc.sql("SELECT object_key FROM dataset_version WHERE (source = 'SYNTHETIC' OR cycle_id IN (:ids)) AND object_key IS NOT NULL")
             .param("ids", syntheticCycles.isEmpty() ? List.of(UUID.randomUUID()) : syntheticCycles).query(String.class).list();
@@ -269,6 +273,8 @@ public class SyntheticDataService {
                 AND NOT EXISTS (SELECT 1 FROM forecast_line f WHERE f.product_id = product.id)
                 AND NOT EXISTS (SELECT 1 FROM inventory_line i WHERE i.product_id = product.id)
                 AND NOT EXISTS (SELECT 1 FROM plan_line pl WHERE pl.product_id = product.id)
+                AND NOT EXISTS (SELECT 1 FROM plan_product_stock ps WHERE ps.product_id = product.id)
+                AND NOT EXISTS (SELECT 1 FROM allocation_line al WHERE al.product_id = product.id)
                 AND NOT EXISTS (SELECT 1 FROM sales_history s WHERE s.product_id = product.id)
                 """).update();
         jdbc.sql("DELETE FROM planning_cycle c WHERE NOT EXISTS (SELECT 1 FROM dataset_version v WHERE v.cycle_id = c.id)").update();

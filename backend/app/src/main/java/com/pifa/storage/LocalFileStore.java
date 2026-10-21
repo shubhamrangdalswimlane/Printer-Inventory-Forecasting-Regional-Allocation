@@ -6,8 +6,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import org.springframework.stereotype.Component;
 
-/** {@link FileStore} that keeps files under one root folder on local disk. */
+/**
+ * {@link FileStore} that keeps files under one root folder on local disk. Default for development and
+ * tests ({@code pifa.storage.type=local}); production uses {@link S3FileStore} because disk is not shared
+ * between replicas.
+ */
 @Component
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "pifa.storage.type", havingValue = "local", matchIfMissing = true)
 public class LocalFileStore implements FileStore {
 
     private final Path root;

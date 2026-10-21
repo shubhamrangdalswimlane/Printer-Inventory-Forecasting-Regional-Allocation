@@ -1,0 +1,241 @@
+# prometheusrule.yaml - alert rules from architecture.md 14, for the Prometheus Operator. Every rule carries a
+# severity (critical = page on-call now, warning = handle in working hours, info = for the record), a summary,
+# a description and a runbook_url pointing at docs/runbooks/<file>.md.
+# All PIFA metrics carry application="pifa"; they are also filtered by namespace so dev/qa/prod installs that
+# share one Prometheus alert separately. Gauges backed by the database (outbox, overdue, audit chain) are reported
+# by EVERY pod with the same value, hence max()/count() instead of sum().
+# Text in {{ "{{ ... }}" }} inside annotations is Prometheus templating, escaped so Helm leaves it alone.
+{{- if .Values.monitoring.enabled }}
+{{- $ns := .Release.Namespace }}
+{{- $full := include "pifa.fullname" . }}
+{{- $r := .Values.monitoring.rules }}
+{{- $rb := .Values.monitoring.runbookBaseUrl }}
+{{- $sel := printf "application=\"pifa\", namespace=\"%s\"" $ns }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ $full }}
+  labels:
+    {{- include "pifa.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    # ---------------------------------------------------------------------------------------------------------
+    - name: pifa.ingestion
+      rules:
+        - alert: PifaIngestionRejectedSpike
+          # Several files of one type/channel rejected within an hour usually means an upstream export changed
+          # (new column, renamed product), not one person's typo.
+          expr: |
+            sum by (type, channel) (
+              increase(pifa_ingestion_files_total{ {{- $sel }}, status="REJECTED"}[1h])
+            ) >= {{ $r.rejectedFilesPerHour }}
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: {{ `"{{ $value | printf \"%.0f\" }} {{ $labels.type }} files rejected via {{ $labels.channel }} in the last hour"` }}
+            description: "Validation rejected at least {{ $r.rejectedFilesPerHour }} files of the same type and channel within one hour. Check the error CSVs on SFTP (/outbound/errors) or the Admin ingestion log for the common cause."
+            runbook_url: "{{ $rb }}/rejected-file.md"
+
+        - alert: PifaSftpNoSuccessfulPoll
+          # Heuristic, because the app counts only FAILED polls (pifa_sftp_poll_errors_total), not successful ones.
+          # The worker polls every 60 s, i.e. ~10 polls per 10 minutes. If at least {{ $r.sftpFailedPolls10m }} of
+          # them failed AND no file arrived over SFTP in the same window, no poll has effectively succeeded for
+          # 10 minutes. A quiet SFTP folder alone never fires this (no errors), and one flaky poll does not either.
+          # The counter appears only after the first error, so it being absent is the normal, healthy state.
+          # A worker that is not running at all is covered by PifaWorkerDown below.
+          expr: |
+            (sum(increase(pifa_sftp_poll_errors_total{ {{- $sel }}}[10m])) >= {{ $r.sftpFailedPolls10m }})
+            unless on ()
+            (sum(increase(pifa_ingestion_files_total{ {{- $sel }}, channel="SFTP"}[10m])) > 0)
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "No successful SFTP poll for 10 minutes"
+            description: {{ `"{{ $value | printf \"%.0f\" }} SFTP polls failed in the last 10 minutes and no file was ingested over SFTP. Forecast and inventory files are not being picked up. Check SFTP reachability, the worker's key and known_hosts."` }}
+            runbook_url: "{{ $rb }}/sftp-outage.md"
+
+        - alert: PifaWorkerDown
+          # No worker answering scrapes = no SFTP polling and no scheduled jobs at all.
+          expr: |
+            (sum(up{namespace="{{ $ns }}", service="{{ $full }}-worker"}) or on () vector(0)) == 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "No PIFA worker pod is running"
+            description: "No worker pod has been scrapeable for 10 minutes: SFTP polling, mail outbox, audit verification and retention jobs are stopped."
+            runbook_url: "{{ $rb }}/sftp-outage.md"
+
+    # ---------------------------------------------------------------------------------------------------------
+    - name: pifa.api
+      rules:
+        - alert: PifaApiHighErrorRate
+          # 5xx share of all API requests. The second condition (>= 0.1 req/s) avoids paging on one failed
+          # request during a quiet night, when 1 error in 20 requests would already be 5%.
+          expr: |
+            (
+              sum(rate(http_server_requests_seconds_count{ {{- $sel }}, status=~"5..", uri!~"/actuator.*"}[5m]))
+              /
+              sum(rate(http_server_requests_seconds_count{ {{- $sel }}, uri!~"/actuator.*"}[5m]))
+            ) > {{ $r.errorRatio }}
+            and on ()
+            sum(rate(http_server_requests_seconds_count{ {{- $sel }}, uri!~"/actuator.*"}[5m])) >= 0.1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: {{ `"API 5xx error rate is {{ $value | humanizePercentage }}"` }}
+            description: "More than {{ mulf $r.errorRatio 100 }}% of API requests failed with a server error over the last 5 minutes. Look up the requestId of a failing call in the logs."
+            runbook_url: "{{ $rb }}/api-errors.md"
+
+        - alert: PifaApiHighLatency
+          # p95 per endpoint. The live-refresh stream (/api/v1/events) is excluded: it is long-lived by design.
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le, uri) (
+                rate(http_server_requests_seconds_bucket{ {{- $sel }}, uri!~"/actuator.*|/api/v1/events"}[5m])
+              )
+            ) > {{ $r.p95LatencySeconds }}
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: {{ `"p95 latency of {{ $labels.uri }} is {{ $value | humanizeDuration }}"` }}
+            description: "The 95th percentile response time of this endpoint has been above {{ $r.p95LatencySeconds }} s for 10 minutes (PRD target: pages < 2 s)."
+            runbook_url: "{{ $rb }}/latency.md"
+
+        - alert: PifaApiPodsUnavailable
+          # Needs kube-state-metrics (part of kube-prometheus-stack).
+          expr: |
+            kube_deployment_status_replicas_available{namespace="{{ $ns }}", deployment="{{ $full }}-api"}
+            <
+            kube_deployment_spec_replicas{namespace="{{ $ns }}", deployment="{{ $full }}-api"}
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Some PIFA API pods are unavailable"
+            description: {{ `"Only {{ $value }} API pods are available, fewer than desired, for 10 minutes. Capacity and redundancy are reduced."` }}
+            runbook_url: "{{ $rb }}/api-errors.md"
+
+        - alert: PifaApiDown
+          expr: |
+            (kube_deployment_status_replicas_available{namespace="{{ $ns }}", deployment="{{ $full }}-api"} or on () vector(0)) == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "No PIFA API pod is available"
+            description: "The API has no ready pods: users cannot use the application."
+            runbook_url: "{{ $rb }}/api-errors.md"
+
+        - alert: PifaPodRestarting
+          # Crash loops, OOM kills (memory limit too low) or failing liveness probes. Needs kube-state-metrics.
+          expr: |
+            increase(kube_pod_container_status_restarts_total{namespace="{{ $ns }}", pod=~"{{ $full }}-(api|worker|web|clamav)-.*"}[30m]) > {{ $r.restartsIn30m }}
+          labels:
+            severity: warning
+          annotations:
+            summary: {{ `"{{ $labels.pod }}/{{ $labels.container }} restarted {{ $value | printf \"%.0f\" }} times in 30 minutes"` }}
+            description: "A PIFA container keeps restarting. Check `kubectl describe pod` (OOMKilled? probe failures?) and the previous container's logs."
+            runbook_url: "{{ $rb }}/pod-restarts.md"
+
+        - alert: PifaDbPoolExhausted
+          # Threads waiting for a DB connection for 5 minutes = the pool is too small or connections are held by
+          # slow queries / leaks. Requests will start timing out.
+          expr: |
+            max by (pod, pool) (hikaricp_connections_pending{ {{- $sel }}}) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: {{ `"DB connection pool {{ $labels.pool }} on {{ $labels.pod }} is exhausted"` }}
+            description: {{ `"{{ $value }} threads have been waiting for a database connection for 5 minutes. Check slow queries and the pool size against the DB connection limit."` }}
+            runbook_url: "{{ $rb }}/db-pool.md"
+
+    # ---------------------------------------------------------------------------------------------------------
+    - name: pifa.business
+      rules:
+        - alert: PifaMailOutboxGrowing
+          # Higher than 30 minutes ago AND never drained to zero within those 30 minutes, sustained for another
+          # 15 minutes: mail is not being delivered (SMTP down, credentials, rejected recipients).
+          expr: |
+            (max(pifa_outbox_pending{ {{- $sel }}}) - max(pifa_outbox_pending{ {{- $sel }}} offset 30m)) > 0
+            and on ()
+            max(min_over_time(pifa_outbox_pending{ {{- $sel }}}[30m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Notification e-mail outbox has been growing for 30 minutes"
+            description: "E-mails are queuing in the outbox but not being sent. Check SMTP reachability and the worker logs (MailOutboxPublisher)."
+            runbook_url: "{{ $rb }}/mail-outbox.md"
+
+        - alert: PifaCycleStageOverdue
+          expr: |
+            max(pifa_cycle_stage_overdue{ {{- $sel }}}) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: {{ `"{{ $value | printf \"%.0f\" }} planning cycle(s) past their stage deadline"` }}
+            description: "An open cycle is past its regional review or finalization deadline. Follow up with the regional managers or extend the deadline."
+            runbook_url: "{{ $rb }}/stage-overdue.md"
+
+        - alert: PifaAuditChainBroken
+          # 0 = the nightly hash-chain verification found a tampered or missing audit record. Possible data
+          # tampering: treat as a security incident.
+          expr: |
+            count(pifa_audit_chain_ok{ {{- $sel }}} == 0) > 0
+          labels:
+            severity: critical
+          annotations:
+            summary: "Audit log hash chain is BROKEN"
+            description: "The last audit-chain verification failed: an audit record was altered or removed. Preserve evidence and follow the security incident procedure."
+            runbook_url: "{{ $rb }}/audit-chain-broken.md"
+
+        - alert: PifaAuditChainUnverified
+          # -1 = no verification result yet. Normal right after the first deploy; after a day it means the
+          # nightly verification job is not running.
+          expr: |
+            max(pifa_audit_chain_ok{ {{- $sel }}}) == -1
+          for: 26h
+          labels:
+            severity: info
+          annotations:
+            summary: "Audit log hash chain has not been verified for over a day"
+            description: "pifa_audit_chain_ok is -1 (unknown). Check that the worker runs and that the nightly verification job (02:30) completes."
+            runbook_url: "{{ $rb }}/audit-chain-broken.md"
+
+    # ---------------------------------------------------------------------------------------------------------
+    - name: pifa.certificates
+      rules:
+        - alert: PifaCertificateExpiringSoon
+          # Requires the Prometheus blackbox exporter probing the PIFA endpoints with an http/tcp_tls module;
+          # without it probe_ssl_earliest_cert_expiry does not exist and this rule never fires.
+          expr: |
+            (min by (instance) (probe_ssl_earliest_cert_expiry{ {{- $r.certProbeSelector }}}) - time()) / 86400 < {{ $r.certExpiryDays }}
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: {{ `"TLS certificate of {{ $labels.instance }} expires in {{ $value | printf \"%.0f\" }} days"` }}
+            description: "A certificate served by a PIFA endpoint expires in less than {{ $r.certExpiryDays }} days. Check why automatic renewal (cert-manager) has not happened, or renew manually."
+            runbook_url: "{{ $rb }}/certificate-expiry.md"
+
+        - alert: PifaCertificateExpiryCritical
+          expr: |
+            (min by (instance) (probe_ssl_earliest_cert_expiry{ {{- $r.certProbeSelector }}}) - time()) / 86400 < 7
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            summary: {{ `"TLS certificate of {{ $labels.instance }} expires in {{ $value | printf \"%.0f\" }} days"` }}
+            description: "Less than 7 days left: renew now, or browsers, SFTP clients or the ClamAV client will start failing."
+            runbook_url: "{{ $rb }}/certificate-expiry.md"
+{{- end }}

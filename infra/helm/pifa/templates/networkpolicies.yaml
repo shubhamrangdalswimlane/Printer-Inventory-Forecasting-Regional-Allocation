@@ -1,0 +1,89 @@
+# networkpolicies.yaml - zero-trust ingress inside the namespace: everything is denied, then only these flows are
+# allowed:
+#   ingress controller -> web:8080 and api:8080      (user traffic)
+#   api, worker        -> clamav:3311                (TLS scanning; clamd's 3310 is loopback-only anyway)
+#   Prometheus         -> api:9091 and worker:9091   (metrics; the management port is reachable by nothing else)
+# Kubelet health probes come from the node and are not subject to these policies on mainstream CNIs.
+# Egress is left open on purpose (see values.yaml networkPolicy).
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "pifa.fullname" . }}-default-deny-ingress
+  labels:
+    {{- include "pifa.labels" . | nindent 4 }}
+spec:
+  # Empty selector = every pod in the namespace; no ingress rules = nothing allowed in.
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "pifa.fullname" . }}-ingress-to-web-api
+  labels:
+    {{- include "pifa.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app.kubernetes.io/instance, operator: In, values: [{{ .Release.Name | quote }}] }
+      - { key: app.kubernetes.io/component, operator: In, values: [web, api] }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.ingressControllerNamespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $np.ingressControllerPodLabels | nindent 14 }}
+      # Only the public port; 9091 is not listed.
+      ports:
+        - { port: http, protocol: TCP }
+{{- if .Values.clamav.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "pifa.fullname" . }}-backend-to-clamav
+  labels:
+    {{- include "pifa.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "pifa.selectorLabels" (dict "root" . "component" "clamav") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/instance, operator: In, values: [{{ .Release.Name | quote }}] }
+              - { key: app.kubernetes.io/component, operator: In, values: [api, worker] }
+      ports:
+        - { port: 3311, protocol: TCP }
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "pifa.fullname" . }}-prometheus-to-management
+  labels:
+    {{- include "pifa.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app.kubernetes.io/instance, operator: In, values: [{{ .Release.Name | quote }}] }
+      - { key: app.kubernetes.io/component, operator: In, values: [api, worker] }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.prometheusNamespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $np.prometheusPodLabels | nindent 14 }}
+      ports:
+        - { port: 9091, protocol: TCP }
+{{- end }}

@@ -4,6 +4,7 @@ import com.pifa.audit.AuditService;
 import com.pifa.common.ApiException;
 import com.pifa.config.PifaProperties;
 import com.pifa.forecast.EditPolicy.Field;
+import com.pifa.parameters.RuleParameterService;
 import com.pifa.rules.RulesFacade;
 import com.pifa.rules.model.ForecastChange;
 import com.pifa.rules.model.ForecastConfig;
@@ -49,8 +50,13 @@ public class ForecastEditService {
     private final AuditService audit;
     private final RulesFacade rules;
     private final PifaProperties props;
+    private final RuleParameterService params;
+    private final com.pifa.events.LiveEvents events;
 
-    public ForecastEditService(JdbcClient jdbc, TransactionTemplate tx, AuditService audit, RulesFacade rules, PifaProperties props) {
+    public ForecastEditService(JdbcClient jdbc, TransactionTemplate tx, AuditService audit, RulesFacade rules, PifaProperties props,
+                               RuleParameterService params, com.pifa.events.LiveEvents events) {
+        this.params = params;
+        this.events = events;
         this.jdbc = jdbc;
         this.tx = tx;
         this.audit = audit;
@@ -60,7 +66,7 @@ public class ForecastEditService {
 
     /** A plan_line row joined with its product name and cycle state, as read for an edit. */
     private record Row(UUID id, UUID productId, String product, String region, int uploaded, int published, Integer revised,
-                       String reason, long rowVersion, String cycleState, String regionReview) {}
+                       String reason, long rowVersion, String cycleState, String regionReview, Integer proposed, Integer approved) {}
 
     /**
      * Applies a batch of edits to one cycle.
@@ -77,7 +83,8 @@ public class ForecastEditService {
             List<EditedLine> out = new ArrayList<>();
             List<Map<String, Object>> conflicts = new ArrayList<>();
             long maxQty = props.ingestion().maxQty();
-            ForecastConfig cfg = new ForecastConfig(props.forecast().changeThresholdPct(), props.ingestion().spikeFactor(), maxQty);
+            var pv = params.current().values();
+            ForecastConfig cfg = new ForecastConfig(pv.changeThresholdPct(), pv.spikeFactor(), maxQty);
 
             // Pass 1: authorise and validate every edit before changing anything.
             List<Object[]> plan = new ArrayList<>(); // {Row, EditRequest, Field}
@@ -95,6 +102,14 @@ public class ForecastEditService {
                         throw new ApiException(HttpStatus.BAD_REQUEST, "REASON_REQUIRED", x.getMessage());
                     });
                 }
+                if (field == Field.APPROVED) {
+                    // BR-AL-07: the proposal is only a starting point, but every deviation from it is logged with a reason.
+                    if (row.proposed() == null) throw new ApiException(HttpStatus.CONFLICT, "NO_PROPOSAL", "Generate the allocation proposal first");
+                    if (!e.value().equals(row.proposed()) && (e.reason() == null || e.reason().isBlank())) {
+                        throw new ApiException(HttpStatus.BAD_REQUEST, "REASON_REQUIRED",
+                            row.product() + " / " + row.region() + ": a reason is required when changing the proposed " + row.proposed() + " to " + e.value());
+                    }
+                }
                 plan.add(new Object[]{row, e, field});
             }
 
@@ -103,15 +118,22 @@ public class ForecastEditService {
                 Row row = (Row) p[0];
                 EditRequest e = (EditRequest) p[1];
                 Field field = (Field) p[2];
-                Integer oldValue = field == Field.PUBLISHED ? row.published() : row.revised();
-                if (e.rowVersion() == row.rowVersion() && e.value().equals(oldValue) && (field == Field.PUBLISHED || sameReason(row.reason(), e.reason()))) {
+                Integer oldValue = switch (field) {
+                    case PUBLISHED -> row.published();
+                    case REVISED -> row.revised();
+                    case APPROVED -> row.approved();
+                };
+                if (e.rowVersion() == row.rowVersion() && e.value().equals(oldValue) && (field != Field.REVISED || sameReason(row.reason(), e.reason()))) {
                     continue; // nothing to change
                 }
-                int updated = field == Field.PUBLISHED
-                    ? jdbc.sql("UPDATE plan_line SET published_qty = :v, row_version = row_version + 1 WHERE id = :id AND row_version = :rv")
-                        .param("v", e.value()).param("id", row.id()).param("rv", e.rowVersion()).update()
-                    : jdbc.sql("UPDATE plan_line SET revised_qty = :v, revision_reason = :r, row_version = row_version + 1 WHERE id = :id AND row_version = :rv")
+                int updated = switch (field) {
+                    case PUBLISHED -> jdbc.sql("UPDATE plan_line SET published_qty = :v, row_version = row_version + 1 WHERE id = :id AND row_version = :rv")
+                        .param("v", e.value()).param("id", row.id()).param("rv", e.rowVersion()).update();
+                    case REVISED -> jdbc.sql("UPDATE plan_line SET revised_qty = :v, revision_reason = :r, row_version = row_version + 1 WHERE id = :id AND row_version = :rv")
                         .param("v", e.value()).param("r", blankToNull(e.reason())).param("id", row.id()).param("rv", e.rowVersion()).update();
+                    case APPROVED -> jdbc.sql("UPDATE plan_line SET approved_alloc_qty = :v, row_version = row_version + 1 WHERE id = :id AND row_version = :rv")
+                        .param("v", e.value()).param("id", row.id()).param("rv", e.rowVersion()).update();
+                };
                 if (updated == 0) {
                     Row now = load(cycleId, row.id());
                     conflicts.add(Map.of("lineId", now.id(), "product", now.product(), "region", now.region(), "rowVersion", now.rowVersion(),
@@ -130,7 +152,9 @@ public class ForecastEditService {
                     Map.of("conflicts", conflicts));
             }
             if (!out.isEmpty()) {
-                audit.record(user.username(), "FORECAST_EDIT", "planning_cycle", cycleId.toString(), Map.of("cells", out.size()));
+                boolean allocation = plan.stream().anyMatch(x -> x[2] == Field.APPROVED);
+                audit.record(user.username(), allocation ? "ALLOCATION_EDIT" : "FORECAST_EDIT", "planning_cycle", cycleId.toString(), Map.of("cells", out.size()));
+                events.publish(cycleId, "EDIT");
             }
             return out;
         });
@@ -140,13 +164,14 @@ public class ForecastEditService {
     private Row load(UUID cycleId, UUID lineId) {
         return jdbc.sql("""
                 SELECT l.id, l.product_id, p.product_name, l.region_code, l.uploaded_qty, l.published_qty, l.revised_qty,
-                       l.revision_reason, l.row_version, c.state, s.review_status
+                       l.revision_reason, l.row_version, c.state, s.review_status, l.proposed_alloc_qty, l.approved_alloc_qty
                 FROM plan_line l JOIN product p ON p.id = l.product_id JOIN planning_cycle c ON c.id = l.cycle_id
                 LEFT JOIN cycle_region_status s ON s.cycle_id = l.cycle_id AND s.region_code = l.region_code
                 WHERE l.id = :id AND l.cycle_id = :c
                 """).param("id", lineId).param("c", cycleId)
             .query((rs, n) -> new Row(rs.getObject(1, UUID.class), rs.getObject(2, UUID.class), rs.getString(3), rs.getString(4),
-                rs.getInt(5), rs.getInt(6), (Integer) rs.getObject(7), rs.getString(8), rs.getLong(9), rs.getString(10), rs.getString(11)))
+                rs.getInt(5), rs.getInt(6), (Integer) rs.getObject(7), rs.getString(8), rs.getLong(9), rs.getString(10), rs.getString(11),
+                (Integer) rs.getObject(12), (Integer) rs.getObject(13)))
             .optional().orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "Forecast line not found in this cycle"));
     }
 
@@ -154,7 +179,7 @@ public class ForecastEditService {
         try {
             return Field.valueOf(f == null ? "" : f.toUpperCase());
         } catch (IllegalArgumentException e) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "BAD_FIELD", "field must be PUBLISHED or REVISED");
+            throw new ApiException(HttpStatus.BAD_REQUEST, "BAD_FIELD", "field must be PUBLISHED, REVISED or APPROVED");
         }
     }
 

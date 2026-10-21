@@ -1,5 +1,5 @@
 # ci.yml - GitHub Actions pipeline. Runs on every pull request and on every push to main.
-# Four jobs: backend and frontend build+test, a security scan, and (main only) a container image.
+# Five jobs: backend and frontend build+test, a security scan, the end-to-end UI test, and (main only) a container image.
 name: ci
 
 on:
@@ -19,21 +19,27 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U pifa" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
-      - uses: actions/checkout@v4                    # download the repository
-      - uses: actions/setup-java@v4                  # install JDK 21 and cache Maven downloads
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0                    # download the repository
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1                  # install JDK 21 and cache Maven downloads
         with: { distribution: temurin, java-version: '21', cache: maven }
       # SFTP and ClamAV need volumes / startup time that job services cannot give, so they come from
       # the same docker-compose file developers use. The tests that need them skip themselves when
       # the PIFA_TEST_* variables below are absent.
-      - name: Start SFTP, ClamAV and Mailpit
+      - name: Start SFTP, ClamAV (behind TLS) and Mailpit
         run: |
-          docker compose -f infra/docker-compose.yml up -d sftp clamav mailpit
+          docker compose -f infra/docker-compose.yml up -d sftp clamav clamav-tls mailpit
           until docker compose -f infra/docker-compose.yml exec -T clamav clamdcheck.sh; do sleep 5; done
+          # The ClamAV client verifies the TLS certificate, so the tests need the (self-signed) CA that the
+          # compose stack generated.
+          docker compose -f infra/docker-compose.yml cp clamav-tls:/certs/ca.pem "$RUNNER_TEMP/clamav-ca.pem"
       - name: Build and test
         env:
           PIFA_TEST_SFTP_HOST: localhost
           PIFA_TEST_SFTP_PORT: '2222'
-          PIFA_TEST_CLAMAV_HOST: localhost
+          PIFA_TEST_CLAMAV_HOST: localhost                        # a name that is in the certificate
+          PIFA_TEST_CLAMAV_PORT: '3311'
+          PIFA_TEST_CLAMAV_CA: ${{ runner.temp }}/clamav-ca.pem
+          PIFA_TEST_CLAMAV_ALT_HOST: 127.0.0.2                    # same server, address NOT in the certificate: must be refused
           PIFA_TEST_SMTP_HOST: localhost
           PIFA_TEST_MAILPIT_API: http://localhost:8025
         run: mvn -B -f backend/pom.xml verify        # -B = batch mode (clean logs); verify = compile + test + package
@@ -45,8 +51,8 @@ jobs:
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: frontend } }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: '22', cache: npm, cache-dependency-path: frontend/package-lock.json }
       - run: npm ci                                  # reproducible install from package-lock.json
       - run: npm run build                           # type-check (tsc) + production build (vite)
@@ -55,7 +61,7 @@ jobs:
   security:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Scanners run as pinned container images instead of third-party GitHub Actions. The
       # action tag aquasecurity/trivy-action@0.28.0 no longer resolves, and running the image
       # directly removes a third-party action from the supply chain.
@@ -68,20 +74,58 @@ jobs:
       # Semgrep: static analysis (SAST) with the default rule set; --error fails on findings.
       - name: Semgrep scan
         run: |
-          docker run --rm -v "$PWD:/src" -w /src semgrep/semgrep:latest \
+          docker run --rm -v "$PWD:/src" -w /src semgrep/semgrep@sha256:81474464c1f07483ba0682a44787fd93c91397419762a04abe2bafaae396304b \
             semgrep scan --config p/default --error
+
+  # End-to-end: the real UI driven through real Keycloak logins for one full monthly cycle (e2e/tests).
+  # Everything runs as containers on one Docker network, so the browser, the app and Keycloak all reach each
+  # other by the same host names (keycloak, pifa-api, web) - the token issuer must look identical to all of them.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with: { distribution: temurin, java-version: '21', cache: maven }
+      - name: Build the API jar
+        run: mvn -B -f backend/pom.xml -DskipTests package
+      - name: Start PostgreSQL, Keycloak, the API and the web app
+        run: |
+          docker network create pifa-net
+          docker run -d --name pifa-pg --network pifa-net -e POSTGRES_DB=pifa -e POSTGRES_USER=pifa -e POSTGRES_PASSWORD=pifa postgres:16
+          docker run -d --name keycloak --network pifa-net -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin -e KC_HTTP_PORT=8081 \
+            -v "$PWD/infra/keycloak/realm-pifa-dev.json:/opt/keycloak/data/import/realm-pifa-dev.json:ro" quay.io/keycloak/keycloak:26.0 start-dev --import-realm
+          until docker run --rm --network pifa-net curlimages/curl:8.11.1 -fsS http://keycloak:8081/realms/pifa-dev >/dev/null 2>&1; do sleep 5; done
+          JAR=$(ls backend/app/target/pifa-app-*.jar | head -1)
+          docker run -d --name pifa-api --network pifa-net -v "$PWD/$JAR:/app/app.jar:ro" \
+            -e PIFA_DB_URL=jdbc:postgresql://pifa-pg:5432/pifa -e PIFA_OIDC_ISSUER=http://keycloak:8081/realms/pifa-dev -e PIFA_STORAGE_DIR=/tmp/files \
+            -e PIFA_KEYCLOAK_ADMIN_URL=http://keycloak:8081 -e PIFA_KEYCLOAK_READER_SECRET=dev-admin-reader-secret \
+            eclipse-temurin:21-jre java -jar /app/app.jar
+          docker run -d --name web --network pifa-net -v "$PWD/frontend:/src:ro" \
+            -e VITE_OIDC_AUTHORITY=http://keycloak:8081/realms/pifa-dev -e VITE_API_TARGET=http://pifa-api:8080 node:22-alpine \
+            sh -c "cp -r /src /tmp/fe && cd /tmp/fe && rm -rf node_modules && npm ci --silent && npx vite build && npx vite preview --host 0.0.0.0 --port 4173"
+          until docker run --rm --network pifa-net curlimages/curl:8.11.1 -fsS http://web:4173 >/dev/null 2>&1; do sleep 5; done
+      - name: Run Playwright
+        run: |
+          docker run --rm --network pifa-net -e E2E_PROXY_TARGET=web:4173 -v "$PWD/e2e:/e2e" -w /e2e \
+            mcr.microsoft.com/playwright:v1.49.1-jammy sh -c "npm ci && npx playwright test"
+      - name: Logs and report on failure
+        if: failure()
+        run: docker logs pifa-api 2>&1 | tail -200
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with: { name: playwright-report, path: 'e2e/playwright-report', retention-days: 7 }
 
   # Build and publish the API container image, only after everything above passed and only on main.
   image:
-    needs: [backend, frontend, security]
+    needs: [backend, frontend, security, e2e]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions: { packages: write, contents: read }   # least privilege: may push packages, read code
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@v3                 # log in to GitHub Container Registry with the built-in token
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0                 # log in to GitHub Container Registry with the built-in token
         with: { registry: ghcr.io, username: '${{ github.actor }}', password: '${{ secrets.GITHUB_TOKEN }}' }
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .                                  # repository root (the Dockerfile copies backend/ and rules/)
           file: backend/Dockerfile

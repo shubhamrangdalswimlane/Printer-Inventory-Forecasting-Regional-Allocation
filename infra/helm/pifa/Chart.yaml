@@ -1,0 +1,17 @@
+# Chart.yaml - metadata of the PIFA Helm chart (architecture.md 13: production runs on Kubernetes,
+# deployed with Helm from Git). One chart installs the whole application namespace: the API, the background
+# worker (same image, different settings), the web front end (nginx), ClamAV, the ingress, network policies,
+# secrets wiring and monitoring objects. PostgreSQL, S3, Keycloak and SFTP are managed services outside it.
+apiVersion: v2
+name: pifa
+description: PIFA - printer inventory forecasting and regional allocation (API, worker, web, ClamAV)
+type: application
+# Version of the chart itself; bump on every change to templates or default values.
+version: 0.1.0
+# Default image tag of the API/worker image when image.tag is empty. CI tags images with the commit id, so
+# real deployments always set image.tag explicitly.
+appVersion: "0.1.0"
+keywords: [pifa, spring-boot, react, forecasting]
+home: https://github.com/OWNER/pifa
+maintainers:
+  - name: PIFA platform team

@@ -1,0 +1,48 @@
+{{/* NOTES.txt - printed after `helm install/upgrade`: what was deployed and how to check it. */}}
+PIFA {{ .Chart.AppVersion }} (chart {{ .Chart.Version }}) is deployed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Workloads
+  api     {{ include "pifa.fullname" . }}-api      REST API, PIFA_JOBS_ENABLED=false, PIFA_SFTP_ENABLED=false{{ if .Values.api.autoscaling.enabled }} (HPA {{ .Values.api.autoscaling.minReplicas }}-{{ .Values.api.autoscaling.maxReplicas }}){{ end }}
+  worker  {{ include "pifa.fullname" . }}-worker   SFTP poller + scheduled jobs, {{ .Values.worker.replicas }} replicas (one active per job via DB locks)
+  web     {{ include "pifa.fullname" . }}-web      nginx serving the SPA ({{ .Values.web.image.repository }}:{{ .Values.web.image.tag }})
+{{- if .Values.clamav.enabled }}
+  clamav  {{ include "pifa.fullname" . }}-clamav   clamd behind a TLS sidecar on port 3311
+{{- end }}
+
+Check the rollout:
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "pifa.fullname" . }}-api
+{{- if .Values.ingress.enabled }}
+
+Open the application: https://{{ .Values.ingress.host }}/
+{{- end }}
+
+Health and metrics live on the INTERNAL port 9091 (not exposed by the Ingress). To look at them:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "pifa.fullname" . }}-api 9091:9091
+  curl -s localhost:9091/actuator/health/readiness
+
+Secrets the pods expect (created {{ if .Values.externalSecrets.enabled }}by the ExternalSecrets of this release{{ else }}by YOU before install - externalSecrets.enabled is false{{ end }}):
+  {{ .Values.secrets.db.name }} ({{ .Values.secrets.db.usernameKey }}, {{ .Values.secrets.db.passwordKey }})
+  {{ .Values.secrets.sftp.name }} ({{ .Values.secrets.sftp.privateKeyKey }}, {{ .Values.secrets.sftp.knownHostsKey }})
+{{- if .Values.config.keycloak.adminUrl }}
+  {{ .Values.secrets.keycloakReader.name }} ({{ .Values.secrets.keycloakReader.key }})
+{{- end }}
+{{- if .Values.config.clamav.enabled }}
+  {{ .Values.secrets.clamavCa.name }} ({{ .Values.secrets.clamavCa.key }})
+{{- end }}
+{{- if and .Values.clamav.enabled (not .Values.clamav.tls.certManager.enabled) }}
+  {{ .Values.secrets.clamavTls.name }} (tls.crt, tls.key)
+{{- end }}
+{{- if .Values.config.syntheticEnabled }}
+
+WARNING: the synthetic data generator is ENABLED (config.syntheticEnabled=true). It must be false in production.
+{{- end }}
+{{- if not .Values.monitoring.enabled }}
+
+Note: monitoring.enabled=false - no ServiceMonitor or alert rules were created.
+{{- end }}
+{{- if eq .Values.web.image.repository "nginxinc/nginx-unprivileged" }}
+
+Note: web uses the stock nginx image, which does not contain the PIFA front end. Set web.image to an image
+built from frontend/dist (see the chart README, "Web image").
+{{- end }}

@@ -43,19 +43,32 @@ spring:
           # Keycloak realm URL. Spring downloads its public signing keys from here to verify
           # tokens, and rejects tokens whose "iss" claim differs.
           issuer-uri: ${PIFA_OIDC_ISSUER:http://localhost:8081/realms/pifa-dev}
-          # Optional: where to fetch the signing keys when the API reaches Keycloak by a different
-          # address than the browser does (e.g. a Docker network name). When set, Spring uses it
-          # instead of discovering keys via issuer-uri, but still checks the token's "iss" equals issuer-uri.
-          jwk-set-uri: ${PIFA_OIDC_JWK_SET_URI:}
+          # Optional, and deliberately NOT given a default here: when the API reaches Keycloak by a different
+          # address than the browser does (e.g. a cluster-internal name), set the environment variable
+          #   SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI=http://keycloak:8081/realms/<realm>/protocol/openid-connect/certs
+          # Spring then fetches the signing keys there and still checks that the token's "iss" equals issuer-uri.
+          # (An empty default value made Spring create two token decoders and refuse to start.)
 
 # Application settings (bound to com.pifa.config.PifaProperties).
 pifa:
+  # Background jobs (SFTP poller, mail outbox, audit verification, retention, partition maintenance) run only
+  # where this is true. Production runs the same image twice: "api" pods (false) and "worker" pods (true).
+  jobs:
+    enabled: ${PIFA_JOBS_ENABLED:true}
   storage:
-    dir: ${PIFA_STORAGE_DIR:./data/files}     # original uploaded files (local disk in Phase 1)
+    type: ${PIFA_STORAGE_TYPE:local}          # local (dev/tests) or s3 (production; required with >1 replica)
+    dir: ${PIFA_STORAGE_DIR:./data/files}     # local only: folder for original files
+    s3:
+      bucket: ${PIFA_S3_BUCKET:pifa-files}
+      prefix: ${PIFA_S3_PREFIX:}
+      region: ${PIFA_S3_REGION:eu-west-1}
+      endpoint: ${PIFA_S3_ENDPOINT:}          # set for MinIO, e.g. http://minio:9000; empty for AWS
+      kms: ${PIFA_S3_KMS:true}                # SSE-KMS on AWS; set false for MinIO (uses AES256)
   clamav:
     enabled: ${PIFA_CLAMAV_ENABLED:false}     # true to scan every file with clamd
-    host: ${PIFA_CLAMAV_HOST:localhost}
-    port: ${PIFA_CLAMAV_PORT:3310}
+    host: ${PIFA_CLAMAV_HOST:localhost}       # TLS endpoint in front of clamd; must match its certificate
+    port: ${PIFA_CLAMAV_PORT:3311}            # the connection is always TLS (clamd is plain TCP behind it)
+    ca-cert: ${PIFA_CLAMAV_CA_CERT:}          # PEM file to trust; empty = JVM default trust store
   cycle:
     auto-create: true                         # a forecast for a new month creates its cycle
   synthetic:
@@ -64,15 +77,25 @@ pifa:
     max-file-bytes: 10485760                  # 10 MB
     max-rows: 50000
     max-qty: 1000000
-    spike-factor: 3.0
+    # The spike factor, change threshold and region weights are Admin-editable rule parameters (database).
   retention:
-    purge-days: 90
-  forecast:
-    change-threshold-pct: 20                  # RM change above this % needs a reason (BR-VA-05)
+    purge-days: 90                            # soft-deleted versions become purgeable after this
+    auto-purge-deleted: ${PIFA_RETENTION_AUTO_PURGE:true}
+    file-years: 3                             # original files of non-active versions are removed after this
+    audit-years: 7                            # audit / change-log months older than this may be dropped ...
+    drop-old-partitions: ${PIFA_RETENTION_DROP_PARTITIONS:false}   # ... only when this is switched on (export first)
   mail:
     enabled: ${PIFA_MAIL_ENABLED:false}       # true to send notification e-mails from the outbox
     from: pifa@example.test
     address-template: "{target}@example.test"  # dev only: real recipients come from Keycloak later
+  # Read-only Keycloak access for the Admin "users & roles" view (FR-AD-09). Empty base URL = view disabled.
+  keycloak:
+    admin-base-url: ${PIFA_KEYCLOAK_ADMIN_URL:}               # e.g. http://keycloak:8081 (as the API reaches it)
+    realm: ${PIFA_KEYCLOAK_REALM:pifa-dev}
+    reader-client-id: pifa-admin-reader
+    reader-client-secret: ${PIFA_KEYCLOAK_READER_SECRET:}     # from the secret store; dev value in the realm file
+  audit:
+    verify-cron: "0 30 2 * * *"                               # nightly hash-chain verification
   # SFTP poller: picks up *.xlsx from the inbound folders every poll-ms, ingests them, then archives them.
   sftp:
     enabled: ${PIFA_SFTP_ENABLED:false}
@@ -85,22 +108,47 @@ pifa:
     known-hosts: ${PIFA_SFTP_KNOWN_HOSTS:}
     forecast-dir: /inbound/forecast
     inventory-dir: /inbound/inventory
+    sales-dir: ${PIFA_SFTP_SALES_DIR:}             # e.g. /inbound/sales to turn on the sales feed (Phase 7); empty = off
     errors-dir: /outbound/errors
     archive-dir: /archive
     poll-ms: 60000
 
 # Actuator = built-in operations endpoints.
 management:
+  # Separate, INTERNAL port for probes and metrics. Never route it through the ingress: Kubernetes probes and
+  # Prometheus reach it on the pod network only. (9091 so it clashes neither with 8080 nor Keycloak's 8081.)
+  server:
+    port: ${PIFA_MANAGEMENT_PORT:9091}
   endpoints:
     web:
       exposure:
-        # Only expose health and info over HTTP (nothing sensitive like env or beans).
-        include: health,info
+        # health (probes), info, prometheus (metrics). Nothing sensitive like env, beans or heapdump.
+        include: health,info,prometheus
+  metrics:
+    tags:
+      application: pifa
+    distribution:
+      # Latency histograms for the HTTP SLO (p95 < 2 s page load, < 500 ms saves) and our own timers.
+      percentiles-histogram:
+        http.server.requests: true
+        pifa.allocation.duration: true
+        pifa.ingestion.duration: true
   endpoint:
     health:
       probes:
         # Adds /actuator/health/liveness and /readiness for Kubernetes.
         enabled: true
+      group:
+        # Ready to take traffic = the app itself is up AND the database answers. Nothing else: an SMTP or
+        # SFTP outage must not remove every API pod from the load balancer (mail is sent from an outbox and
+        # retried; SFTP health is reported on the Admin dashboard and alerted on separately).
+        readiness:
+          include: readinessState,db
+  health:
+    # The mail health check connects to SMTP on every probe and turned the whole API "DOWN" when the mail
+    # server was unreachable. Outbox backlog is monitored instead (see metrics), so this check is off.
+    mail:
+      enabled: false
 
 server:
   port: 8080

@@ -20,6 +20,9 @@ public class ApiExceptionHandler {
         ProblemDetail p = ProblemDetail.forStatusAndDetail(e.getStatus(), e.getMessage());
         p.setProperty("code", e.getCode());
         e.getExtra().forEach(p::setProperty);
+        // Correlation id: lets support match a user's error to the logs and audit rows.
+        String requestId = org.slf4j.MDC.get("requestId");
+        if (requestId != null) p.setProperty("requestId", requestId);
         return p;
     }
 

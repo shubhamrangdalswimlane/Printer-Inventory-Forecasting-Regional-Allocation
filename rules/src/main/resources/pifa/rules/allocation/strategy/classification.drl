@@ -1,10 +1,15 @@
 // =============================================================================
 // classification.drl  -  package pifa.rules.allocation.strategy
 //
-// Purpose : decide whether a printer model is CONSTRAINED or SUFFICIENT (PRD BR-AL-02).
-// Input   : one ProductStock fact (allocatableQty, totalDemand, classification == null).
-// Output  : the same fact with its classification set.
-// Used by : RulesFacade.classify(...). Later phases add the allocation strategy rules here.
+// Purpose : (1) decide whether a printer model is CONSTRAINED or SUFFICIENT (PRD BR-AL-02);
+//           (2) choose the allocation strategy for it (BR-AL-03, BR-AL-04, BR-AL-06).
+// Input   : ProductStock facts (allocatableQty, totalDemand, classification == null) and, for step 2,
+//           one AllocationConfig fact. Without AllocationConfig only step 1 runs.
+// Output  : the ProductStock facts with classification set; AllocationDirective objects added to
+//           the global list "directives".
+// Used by : RulesFacade.classify(...) and RulesFacade.decideStrategies(...). The arithmetic of the
+//           split is NOT here: it lives in the Java AllocationCalculator, so it stays deterministic and
+//           property-tested (architecture.md 7.1).
 //
 // How Drools reads this file:
 //   rule "name" salience N  - salience is priority; higher numbers are tried first.
@@ -15,10 +20,14 @@ package pifa.rules.allocation.strategy;
 
 import com.pifa.rules.model.ProductStock;
 import com.pifa.rules.model.Classification;
+import com.pifa.rules.model.AllocationConfig;
+import com.pifa.rules.model.AllocationDirective;
+import com.pifa.rules.model.Strategy;
+
+global java.util.List directives;
 
 // Rule 1 - runs first (salience 100).
-// Matches a model that has no classification yet AND whose total demand is larger than the
-// stock available to allocate. Marks it CONSTRAINED.
+// Total demand larger than the stock available to allocate: CONSTRAINED.
 rule "Classify constrained product"
     salience 100
 when
@@ -28,13 +37,44 @@ then
 end
 
 // Rule 2 - runs after rule 1 (salience 90).
-// Catches every model that rule 1 did NOT classify (classification is still null), which means
-// demand <= stock. Marks it SUFFICIENT. The "classification == null" test is what prevents this
-// rule from overwriting a CONSTRAINED result.
+// Everything rule 1 did not classify (demand <= stock): SUFFICIENT. The "classification == null"
+// test prevents this rule from overwriting a CONSTRAINED result.
 rule "Classify sufficient product"
     salience 90
 when
     $s : ProductStock( classification == null )
 then
     modify( $s ) { setClassification( Classification.SUFFICIENT ) }
+end
+
+// Strategy for sufficient stock: every region gets its full revised demand (BR-AL-03).
+rule "Sufficient: allocate full revised demand"
+    salience 50
+when
+    AllocationConfig()
+    ProductStock( classification == Classification.SUFFICIENT, $pid : productId )
+then
+    directives.add( new AllocationDirective( $pid, Strategy.FULL_DEMAND ) );
+end
+
+// Strategy for constrained stock, cap-at-demand off (the PRD default): weighted baseline split,
+// 25% per region unless the Admin changed the weights (BR-AL-04).
+rule "Constrained: weighted baseline split"
+    salience 50
+when
+    AllocationConfig( capAtDemand == false )
+    ProductStock( classification == Classification.CONSTRAINED, $pid : productId )
+then
+    directives.add( new AllocationDirective( $pid, Strategy.WEIGHTED_BASELINE ) );
+end
+
+// Strategy for constrained stock, cap-at-demand on: baseline split but never above a region's demand;
+// the excess goes to regions with unmet demand (BR-AL-06).
+rule "Constrained: baseline capped at demand"
+    salience 50
+when
+    AllocationConfig( capAtDemand == true )
+    ProductStock( classification == Classification.CONSTRAINED, $pid : productId )
+then
+    directives.add( new AllocationDirective( $pid, Strategy.WEIGHTED_BASELINE_CAPPED ) );
 end

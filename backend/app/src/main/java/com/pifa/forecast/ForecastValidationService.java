@@ -1,6 +1,7 @@
 package com.pifa.forecast;
 
 import com.pifa.config.PifaProperties;
+import com.pifa.parameters.RuleParameterService;
 import com.pifa.rules.RulesFacade;
 import com.pifa.rules.model.ForecastCell;
 import com.pifa.rules.model.ForecastConfig;
@@ -22,11 +23,13 @@ public class ForecastValidationService {
     private final JdbcClient jdbc;
     private final RulesFacade rules;
     private final PifaProperties props;
+    private final RuleParameterService params;
 
-    public ForecastValidationService(JdbcClient jdbc, RulesFacade rules, PifaProperties props) {
+    public ForecastValidationService(JdbcClient jdbc, RulesFacade rules, PifaProperties props, RuleParameterService params) {
         this.jdbc = jdbc;
         this.rules = rules;
         this.props = props;
+        this.params = params;
     }
 
     /**
@@ -48,7 +51,8 @@ public class ForecastValidationService {
                 WHERE l.cycle_id = :c
                 """).param("c", cycleId)
             .query((rs, n) -> cells.add(new ForecastCell(rs.getString(1), rs.getString(2), rs.getLong(3), rs.getDouble(4)))).list();
-        ForecastConfig cfg = new ForecastConfig(props.forecast().changeThresholdPct(), props.ingestion().spikeFactor(), props.ingestion().maxQty());
+        var p = params.current().values();
+        ForecastConfig cfg = new ForecastConfig(p.changeThresholdPct(), p.spikeFactor(), props.ingestion().maxQty());
         return rules.validateForecast(cells, cfg);
     }
 }

@@ -1,0 +1,10 @@
+# .helmignore - files that `helm package` leaves out of the chart archive (editor and VCS leftovers).
+.git/
+.gitignore
+*.swp
+*.bak
+*.tmp
+*.orig
+.DS_Store
+.idea/
+.vscode/

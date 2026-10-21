@@ -12,9 +12,13 @@ package com.pifa.rules.model;
  *   <li>{@code allocatableQty} = available stock minus the Planner's reserve (BR-AL-01).</li>
  *   <li>{@code totalDemand} = sum of the revised forecast across all regions.</li>
  * </ul>
- * Output: {@code classification}, which starts as {@code null} and is set by the rules.
+ * Output: {@code classification}, which starts as {@code null} and is set by the rules. When the
+ * allocation is only being validated, the caller sets the classification up front, so the
+ * classification rules leave it alone.
  */
 public class ProductStock {
+    /** Stable product key (UUID text); allocation lines refer to it. */
+    private final String productId;
     /** Printer model name; used for logging and explanations only. */
     private final String productName;
     /** Units that may be handed out (available minus reserve, never negative). */
@@ -25,17 +29,31 @@ public class ProductStock {
     private Classification classification;
 
     /**
-     * Creates the fact with its inputs.
+     * Creates the fact using the product name as its key (convenience for simple callers and tests).
      *
-     * @param productName    printer model name (informational)
+     * @param productName    printer model name
      * @param allocatableQty units available to allocate; callers should pass a value &gt;= 0
      * @param totalDemand    total revised demand across regions
      */
     public ProductStock(String productName, int allocatableQty, int totalDemand) {
+        this(productName, productName, allocatableQty, totalDemand);
+    }
+
+    /**
+     * @param productId      stable product key
+     * @param productName    printer model name (informational)
+     * @param allocatableQty units available to allocate; callers should pass a value &gt;= 0
+     * @param totalDemand    total revised demand across regions
+     */
+    public ProductStock(String productId, String productName, int allocatableQty, int totalDemand) {
+        this.productId = productId;
         this.productName = productName;
         this.allocatableQty = allocatableQty;
         this.totalDemand = totalDemand;
     }
+
+    /** @return the product key */
+    public String getProductId() { return productId; }
 
     /** @return the printer model name */
     public String getProductName() { return productName; }
@@ -50,7 +68,7 @@ public class ProductStock {
     public Classification getClassification() { return classification; }
 
     /**
-     * Called by the rules (through {@code modify}) to record the result.
+     * Called by the rules (through {@code modify}) to record the result, or by the caller to pre-set it.
      *
      * @param classification the outcome to store
      */

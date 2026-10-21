@@ -1,0 +1,547 @@
+# values.yaml - default settings of the PIFA chart. Every key is commented. Environment files
+# (values-dev.yaml, values-prod.yaml) override only what differs. Defaults are deliberately the SAFE choice
+# (no synthetic data, S3 storage, ClamAV scanning on, strict SFTP host keys), so forgetting an override never
+# weakens production.
+
+# -- Override the chart name used in resource names (default "pifa").
+nameOverride: ""
+# -- Override the full resource-name prefix (default "<release>-pifa", or "<release>" if it already contains "pifa").
+fullnameOverride: ""
+
+# ---------------------------------------------------------------------------------------------------------------
+# Backend image: ONE image runs as both "api" and "worker" pods (architecture.md 3); only env settings differ.
+# ---------------------------------------------------------------------------------------------------------------
+image:
+  # -- Registry/repository of the Spring Boot image built by CI (backend/Dockerfile). OWNER = GitHub org.
+  repository: ghcr.io/OWNER/pifa-api
+  # -- Image tag. Empty = Chart.appVersion. CI tags images with the commit SHA; deploy that, never "latest".
+  tag: ""
+  # -- Optional immutable digest (sha256:...). When set it wins over the tag, so a re-pushed tag cannot change what runs.
+  digest: ""
+  # -- Pull policy. IfNotPresent is right for immutable tags.
+  pullPolicy: IfNotPresent
+
+# -- Pull secrets for private registries (list of {name: ...}); empty when the cluster can already pull from ghcr.io.
+imagePullSecrets: []
+
+# ---------------------------------------------------------------------------------------------------------------
+# Application settings shared by api and worker. They become environment variables (see application.yml).
+# Secrets are NOT here: see `secrets` and `externalSecrets` below.
+# ---------------------------------------------------------------------------------------------------------------
+config:
+  # -- SPRING_PROFILES_ACTIVE. Empty = default profile. Production uses "prod".
+  springProfilesActive: ""
+  # -- PIFA_OIDC_ISSUER: the PUBLIC Keycloak realm URL. Must equal the "iss" claim of browser tokens exactly.
+  oidcIssuer: https://sso.example.com/realms/pifa
+  # -- SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: optional in-cluster URL of the realm's signing keys,
+  # e.g. http://keycloak.identity.svc:8080/realms/pifa/protocol/openid-connect/certs. Lets the API fetch keys
+  # without leaving the cluster; the issuer is still checked against oidcIssuer. Empty = derive from oidcIssuer.
+  jwkSetUri: ""
+  db:
+    # -- PIFA_DB_URL. Use sslmode=verify-full against managed PostgreSQL (architecture.md 12: TLS everywhere).
+    url: jdbc:postgresql://pifa-db.example.com:5432/pifa?sslmode=verify-full
+  storage:
+    # -- PIFA_STORAGE_TYPE. Must be "s3": api and worker are separate pods and must see the same files, so the
+    # node-local "local" store cannot work in this chart (the templates refuse to render with "local").
+    type: s3
+    s3:
+      # -- PIFA_S3_BUCKET: versioned bucket for original files.
+      bucket: pifa-files
+      # -- PIFA_S3_REGION.
+      region: eu-west-1
+      # -- PIFA_S3_ENDPOINT: empty for AWS S3; set for MinIO/S3-compatible stores (e.g. http://minio.minio.svc:9000).
+      endpoint: ""
+      # -- PIFA_S3_KMS: true = SSE-KMS (AWS); false for MinIO, which then uses AES256.
+      kms: true
+  clamav:
+    # -- PIFA_CLAMAV_ENABLED: scan every uploaded/ingested file. Keep true outside local development.
+    enabled: true
+    # -- PIFA_CLAMAV_HOST. Empty = the in-chart ClamAV Service (<fullname>-clamav). Must match a name in the
+    # TLS certificate, because the application verifies the host name.
+    host: ""
+    # -- PIFA_CLAMAV_PORT: the TLS port of the terminator in front of clamd (never clamd's plain 3310).
+    port: 3311
+  sftp:
+    # -- PIFA_SFTP_HOST: SFTP endpoint the worker polls (e.g. AWS Transfer Family).
+    host: sftp.example.com
+    # -- PIFA_SFTP_PORT.
+    port: 22
+    # -- PIFA_SFTP_USER: the worker's key-only account.
+    user: pifa-worker
+    # -- PIFA_SFTP_STRICT_HOST_KEY. Always true outside local dev: verifies the server against known_hosts.
+    strictHostKey: true
+  mail:
+    # -- PIFA_MAIL_ENABLED: send notification e-mails from the outbox.
+    enabled: false
+    # -- PIFA_SMTP_HOST: SMTP relay (e.g. SES SMTP endpoint or corporate relay).
+    smtpHost: smtp.example.com
+    # -- PIFA_SMTP_PORT.
+    smtpPort: 587
+  # -- PIFA_SYNTHETIC_ENABLED: the synthetic data generator. MUST stay false in production (PRD: real data only).
+  syntheticEnabled: false
+  keycloak:
+    # -- PIFA_KEYCLOAK_ADMIN_URL: Keycloak base URL as the API reaches it (in-cluster), for the read-only
+    # "users & roles" Admin view. Empty disables that view.
+    adminUrl: ""
+    # -- PIFA_KEYCLOAK_REALM: realm the Admin view reads.
+    realm: pifa
+  # -- PIFA_RETENTION_DROP_PARTITIONS: allow dropping audit/change-log partitions older than 7 years. Off by
+  # default because dropping is irreversible; switch on only after the export process is in place.
+  retentionDropPartitions: false
+  # -- JAVA_TOOL_OPTIONS for the JVM. MaxRAMPercentage=75 sizes the heap from the container memory limit and
+  # leaves 25% for metaspace, threads and native buffers (POI, TLS).
+  javaToolOptions: "-XX:MaxRAMPercentage=75"
+  # -- Extra environment variables for both api and worker (list of k8s EnvVar objects).
+  extraEnv: []
+
+# ---------------------------------------------------------------------------------------------------------------
+# OpenTelemetry Java agent (architecture.md 14: traces to Tempo/Jaeger). The agent is not in the app image; an
+# init container copies it from the official auto-instrumentation image into a shared emptyDir.
+# ---------------------------------------------------------------------------------------------------------------
+otel:
+  # -- Attach the OpenTelemetry Java agent to api and worker.
+  enabled: false
+  # -- OTLP endpoint (OTEL_EXPORTER_OTLP_ENDPOINT), e.g. the collector in the observability namespace.
+  endpoint: http://otel-collector.observability.svc:4318
+  # -- OTLP protocol (http/protobuf matches port 4318; use grpc with 4317).
+  protocol: http/protobuf
+  # -- Image that contains /javaagent.jar.
+  agentImage: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-java:2.10.0
+  # -- Agent resources for the copy step (tiny; it only copies one file).
+  initResources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { cpu: 100m, memory: 64Mi }
+
+# ---------------------------------------------------------------------------------------------------------------
+# Secrets. Each entry names the Kubernetes Secret the pods read. With externalSecrets.enabled=true the chart
+# creates an ExternalSecret that produces a Secret of exactly this name; otherwise the Secret must already exist
+# (created by your own tooling - nothing secret is ever written into this chart or Git).
+# ---------------------------------------------------------------------------------------------------------------
+secrets:
+  db:
+    # -- Secret with the database login.
+    name: pifa-db
+    # -- Key holding the user name (PIFA_DB_USER).
+    usernameKey: username
+    # -- Key holding the password (PIFA_DB_PASSWORD).
+    passwordKey: password
+  keycloakReader:
+    # -- Secret with the client secret of "pifa-admin-reader" (PIFA_KEYCLOAK_READER_SECRET). Optional: only read
+    # when config.keycloak.adminUrl is set.
+    name: pifa-keycloak-reader
+    # -- Key holding the client secret.
+    key: client-secret
+  sftp:
+    # -- Secret with the worker's SFTP private key and the server's known_hosts (mounted as files, worker only).
+    name: pifa-sftp
+    # -- Key holding the OpenSSH private key (mounted, path given in PIFA_SFTP_PRIVATE_KEY).
+    privateKeyKey: id_ed25519
+    # -- Key holding the known_hosts file (mounted, path given in PIFA_SFTP_KNOWN_HOSTS).
+    knownHostsKey: known_hosts
+  clamavCa:
+    # -- Secret with the CA certificate (PEM) that signed the ClamAV TLS certificate; api/worker trust only it.
+    # With clamav.tls.certManager.enabled you may point this at the cert-manager Secret and key ca.crt.
+    name: pifa-clamav-ca
+    # -- Key holding the PEM CA certificate (mounted, path given in PIFA_CLAMAV_CA_CERT).
+    key: ca.crt
+  clamavTls:
+    # -- kubernetes.io/tls Secret (tls.crt, tls.key) used by the ClamAV TLS sidecar. Created by cert-manager when
+    # clamav.tls.certManager.enabled, by an ExternalSecret when externalSecrets.enabled, otherwise pre-existing.
+    name: pifa-clamav-tls
+
+# ---------------------------------------------------------------------------------------------------------------
+# External Secrets Operator (architecture.md 12: secrets live in the secret manager, synced into the namespace).
+# Requires the operator and a (Cluster)SecretStore to be installed already.
+# ---------------------------------------------------------------------------------------------------------------
+externalSecrets:
+  # -- Create ExternalSecret objects (external-secrets.io/v1beta1) for every entry in `secrets`.
+  enabled: false
+  # -- How often the operator re-reads the secret manager; rotation is picked up within this time (pods read
+  # env-var secrets at start, so a rollout is still needed for DB/Keycloak values; mounted files update live).
+  refreshInterval: 1h
+  # -- Store to read from.
+  secretStoreRef:
+    # -- Name of the SecretStore / ClusterSecretStore.
+    name: aws-secrets-manager
+    # -- SecretStore or ClusterSecretStore.
+    kind: ClusterSecretStore
+  # -- Remote keys/properties in the secret manager (layout is yours; these are examples).
+  remoteRefs:
+    db:
+      # -- Secret-manager entry holding the DB login as JSON {"username":..,"password":..}.
+      key: pifa/prod/db
+      # -- JSON property for the user name.
+      usernameProperty: username
+      # -- JSON property for the password.
+      passwordProperty: password
+    keycloakReader:
+      # -- Entry holding the pifa-admin-reader client secret.
+      key: pifa/prod/keycloak-reader
+      # -- JSON property of the client secret.
+      property: client-secret
+    sftp:
+      # -- Entry holding the SFTP private key and known_hosts.
+      key: pifa/prod/sftp
+      # -- JSON property of the private key (PEM/OpenSSH text).
+      privateKeyProperty: private-key
+      # -- JSON property of the known_hosts text.
+      knownHostsProperty: known-hosts
+    clamavCa:
+      # -- Entry holding the ClamAV CA certificate PEM.
+      key: pifa/prod/clamav-ca
+      # -- JSON property of the CA PEM.
+      property: ca.crt
+    clamavTls:
+      # -- Entry holding the ClamAV server certificate and key (ignored when cert-manager issues them).
+      key: pifa/prod/clamav-tls
+      # -- JSON property of the certificate chain PEM.
+      certProperty: tls.crt
+      # -- JSON property of the private key PEM.
+      keyProperty: tls.key
+
+# ---------------------------------------------------------------------------------------------------------------
+# Service accounts. AWS access (S3, KMS) comes from IRSA - never from access keys in env vars.
+# ---------------------------------------------------------------------------------------------------------------
+serviceAccount:
+  # -- Annotations of the backend (api + worker) service account. On EKS set the IRSA role, e.g.
+  # eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/pifa-backend
+  annotations: {}
+  # -- IAM role ARN for IRSA (shortcut for the annotation above). Empty = no annotation.
+  roleArn: ""
+
+# ---------------------------------------------------------------------------------------------------------------
+# Pod hardening shared by every PIFA pod (the ClamAV containers override the user, see clamav below).
+# ---------------------------------------------------------------------------------------------------------------
+podSecurityContext:
+  # -- Refuse to start a container that would run as root.
+  runAsNonRoot: true
+  # -- uid of the app user (backend/Dockerfile: USER 1000).
+  runAsUser: 1000
+  # -- Primary gid.
+  runAsGroup: 1000
+  # -- Group owning mounted volumes, so secret files with mode 0440 are readable by the app user.
+  fsGroup: 1000
+  # -- Kernel syscall filter from the container runtime.
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  # -- No setuid escalation.
+  allowPrivilegeEscalation: false
+  # -- Image filesystem is read-only; writable paths are explicit emptyDirs (/tmp).
+  readOnlyRootFilesystem: true
+  # -- Drop every Linux capability; nothing in PIFA needs one (all ports are > 1024).
+  capabilities:
+    drop: [ALL]
+
+# ---------------------------------------------------------------------------------------------------------------
+# Probes for api and worker. All hit the internal management port 9091, never the public 8080.
+# ---------------------------------------------------------------------------------------------------------------
+probes:
+  startup:
+    # -- First check after this many seconds.
+    initialDelaySeconds: 15
+    # -- Check interval.
+    periodSeconds: 5
+    # -- 15 s + 36 x 5 s = up to ~3 min to start. Normal start is ~45 s (Flyway, Drools KIE build); the margin
+    # covers slow nodes and long migrations without the liveness probe killing a starting pod.
+    failureThreshold: 36
+  liveness:
+    # -- Check interval.
+    periodSeconds: 10
+    # -- Per-check timeout.
+    timeoutSeconds: 3
+    # -- Restart after 3 consecutive failures (30 s).
+    failureThreshold: 3
+  readiness:
+    # -- Check interval.
+    periodSeconds: 5
+    # -- Per-check timeout (readiness includes a DB ping).
+    timeoutSeconds: 3
+    # -- Leave the Service after 3 consecutive failures.
+    failureThreshold: 3
+
+# ---------------------------------------------------------------------------------------------------------------
+# api: serves the REST API to browsers. Background jobs and SFTP polling are OFF here (worker does them).
+# ---------------------------------------------------------------------------------------------------------------
+api:
+  # -- Replica count when autoscaling is disabled.
+  replicas: 2
+  autoscaling:
+    # -- Create a HorizontalPodAutoscaler (autoscaling/v2).
+    enabled: true
+    # -- Never fewer than 2, so one pod can be lost (node drain, crash) without an outage.
+    minReplicas: 2
+    # -- Upper bound; the DB connection pool (10 per pod by default) x maxReplicas must fit the DB limit.
+    maxReplicas: 6
+    # -- Scale out when average CPU use exceeds this % of the CPU request.
+    targetCPUUtilizationPercentage: 70
+  pdb:
+    # -- Create a PodDisruptionBudget.
+    enabled: true
+    # -- Pods that must stay up during voluntary disruptions (node drains, upgrades).
+    minAvailable: 1
+  # -- CPU/memory. Requests drive scheduling and HPA %; the memory limit drives the heap (MaxRAMPercentage).
+  resources:
+    requests: { cpu: 500m, memory: 1Gi }
+    limits: { cpu: "2", memory: 2Gi }
+  # -- Extra env vars for api pods only.
+  extraEnv: []
+  # -- Extra pod annotations.
+  podAnnotations: {}
+  # -- Node selector.
+  nodeSelector: {}
+  # -- Tolerations.
+  tolerations: []
+  # -- Affinity. Empty = a soft anti-affinity that spreads replicas over nodes (see _helpers.tpl).
+  affinity: {}
+
+# ---------------------------------------------------------------------------------------------------------------
+# worker: same image; runs the SFTP poller and scheduled jobs. Two replicas are safe because every job takes a
+# PostgreSQL advisory lock / ShedLock first, so exactly one replica runs each job; the second is a hot standby.
+# No HPA: more workers would only wait on the same locks.
+# ---------------------------------------------------------------------------------------------------------------
+worker:
+  # -- Replicas (2 = failover, not throughput).
+  replicas: 2
+  pdb:
+    # -- Create a PodDisruptionBudget.
+    enabled: true
+    # -- Keep one worker during drains so polling never stops.
+    minAvailable: 1
+  # -- CPU/memory. Parsing 50k-row workbooks (POI streaming) needs more memory headroom than the API.
+  resources:
+    requests: { cpu: 250m, memory: 1Gi }
+    limits: { cpu: "2", memory: 2Gi }
+  # -- Extra env vars for worker pods only.
+  extraEnv: []
+  # -- Extra pod annotations.
+  podAnnotations: {}
+  # -- Node selector.
+  nodeSelector: {}
+  # -- Tolerations.
+  tolerations: []
+  # -- Affinity. Empty = soft anti-affinity over nodes.
+  affinity: {}
+
+# ---------------------------------------------------------------------------------------------------------------
+# web: nginx serving the built React SPA (frontend/dist). VITE_OIDC_AUTHORITY is baked in at build time, so a
+# real deployment uses an image that contains the build (see README "Web image"). The stock nginx image below
+# serves only nginx's welcome page and is the default just so the chart renders and runs anywhere.
+# ---------------------------------------------------------------------------------------------------------------
+web:
+  # -- Replicas.
+  replicas: 2
+  image:
+    # -- nginx image. Must be an *unprivileged* nginx (listens on 8080, runs as uid 101 or 1000).
+    repository: nginxinc/nginx-unprivileged
+    # -- Tag.
+    tag: 1.29-alpine
+    # -- Pull policy.
+    pullPolicy: IfNotPresent
+  # -- Keycloak origin (scheme://host[:port], no path) allowed in the CSP connect-src, for OIDC discovery,
+  # token and userinfo calls made by oidc-client-ts.
+  keycloakOrigin: https://sso.example.com
+  # -- Extra CSP directives appended verbatim (e.g. "frame-src https://sso.example.com" if iframe-based silent
+  # renew is ever used instead of refresh tokens). Empty = the strict default policy only.
+  cspExtra: ""
+  # -- HSTS max-age in seconds (1 year). includeSubDomains is set; add preload only after registering the domain.
+  hstsMaxAge: 31536000
+  pdb:
+    # -- Create a PodDisruptionBudget.
+    enabled: true
+    # -- Keep one nginx during drains.
+    minAvailable: 1
+  # -- nginx is tiny; static files only.
+  resources:
+    requests: { cpu: 50m, memory: 32Mi }
+    limits: { cpu: 500m, memory: 128Mi }
+  # -- Extra pod annotations.
+  podAnnotations: {}
+  # -- Node selector.
+  nodeSelector: {}
+  # -- Tolerations.
+  tolerations: []
+  # -- Affinity. Empty = soft anti-affinity over nodes.
+  affinity: {}
+
+# ---------------------------------------------------------------------------------------------------------------
+# ClamAV: clamd listens on 127.0.0.1:3310 INSIDE the pod only; a socat sidecar terminates TLS on 3311 and is the
+# only thing the Service exposes. Signatures are downloaded at start by an init container and kept fresh by a
+# freshclam sidecar.
+# ---------------------------------------------------------------------------------------------------------------
+clamav:
+  # -- Deploy ClamAV in this namespace. Set false only if you point config.clamav.host at an external scanner.
+  enabled: true
+  # -- Replicas (architecture.md 13: x2, so a signature reload or node drain never blocks uploads).
+  replicas: 2
+  image:
+    # -- Official ClamAV image (clamd + freshclam).
+    repository: clamav/clamav
+    # -- 1.4 = current LTS line.
+    tag: "1.4"
+    # -- Pull policy.
+    pullPolicy: IfNotPresent
+  # -- uid/gid of the "clamav" user inside the image. The image's own /init needs root (it chowns and edits
+  # /etc), so the chart bypasses it and runs clamd/freshclam directly as this non-root user.
+  runAsUser: 100
+  # -- gid of the "clamav" group inside the image.
+  runAsGroup: 101
+  # -- Signature mirror. Point at a private mirror (e.g. cvdupdate behind nginx) if egress to the internet is
+  # blocked; database.clamav.net rate-limits aggressive clients.
+  databaseMirror: database.clamav.net
+  # -- How many times per day freshclam checks for new signatures.
+  freshclamChecksPerDay: 12
+  # -- clamd StreamMaxLength. PIFA files are <= 10 MB; a little headroom, and nothing larger is accepted.
+  streamMaxLength: 12M
+  # -- clamd memory: ~1.2 GB for signatures, and twice that during a live reload (ConcurrentDatabaseReload).
+  resources:
+    requests: { cpu: 250m, memory: 1536Mi }
+    limits: { cpu: "1", memory: 3Gi }
+  # -- freshclam sidecar resources.
+  freshclamResources:
+    requests: { cpu: 10m, memory: 64Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+  # -- Size limit of the signature emptyDir (~350 MB today, x2 during updates).
+  databaseSizeLimit: 1Gi
+  tls:
+    image:
+      # -- TLS terminator image (socat with OpenSSL), same as docker-compose's clamav-tls.
+      repository: alpine/socat
+      # -- Pinned socat release.
+      tag: 1.8.0.3
+      # -- Pull policy.
+      pullPolicy: IfNotPresent
+    # -- Minimum TLS version accepted by the terminator.
+    minProtocolVersion: TLS1.2
+    # -- Sidecar resources.
+    resources:
+      requests: { cpu: 10m, memory: 16Mi }
+      limits: { cpu: 500m, memory: 64Mi }
+    certManager:
+      # -- Issue the server certificate with cert-manager (cert-manager.io/v1 Certificate) into secrets.clamavTls.name.
+      enabled: false
+      # -- Issuer reference (an internal CA issuer; this is a cluster-internal service, not a public name).
+      issuerRef:
+        # -- Issuer name.
+        name: internal-ca
+        # -- Issuer or ClusterIssuer.
+        kind: ClusterIssuer
+        # -- cert-manager API group.
+        group: cert-manager.io
+      # -- Certificate lifetime.
+      duration: 2160h
+      # -- Renew this long before expiry (well inside the 21-day expiry alert).
+      renewBefore: 720h
+  pdb:
+    # -- Create a PodDisruptionBudget.
+    enabled: true
+    # -- Keep one scanner during drains.
+    minAvailable: 1
+  # -- Extra pod annotations.
+  podAnnotations: {}
+  # -- Node selector.
+  nodeSelector: {}
+  # -- Tolerations.
+  tolerations: []
+  # -- Affinity. Empty = soft anti-affinity over nodes.
+  affinity: {}
+
+# ---------------------------------------------------------------------------------------------------------------
+# Ingress. Two Ingress objects share one host: "/api" -> api:8080 and "/" -> web:8080. They are separate so the
+# API gets its own rate limit and body-size limit without static assets counting against them. Port 9091
+# (management) is never referenced, so it is unreachable from outside the cluster.
+# ---------------------------------------------------------------------------------------------------------------
+ingress:
+  # -- Create the Ingress objects.
+  enabled: true
+  # -- IngressClass (ingress-nginx by default; the annotations below are ingress-nginx annotations).
+  className: nginx
+  # -- Public host name of the application.
+  host: pifa.example.com
+  # -- TLS secret for the host (e.g. issued by cert-manager via the annotation below, or by your platform).
+  tlsSecretName: pifa-tls
+  # -- Annotations on both Ingresses (e.g. cert-manager.io/cluster-issuer: letsencrypt).
+  annotations:
+    # Redirect plain HTTP to HTTPS, even behind a TLS-terminating load balancer.
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+  # -- Extra annotations on the /api Ingress only.
+  apiAnnotations:
+    # Rate limit per client IP (requests/second); burst = rps x multiplier. Protects the API from scripted abuse
+    # (architecture.md 12). 20 rps is far above what one person clicking through the dashboards produces.
+    nginx.ingress.kubernetes.io/limit-rps: "20"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "5"
+    # Simultaneous connections per client IP (live-refresh streams hold one each).
+    nginx.ingress.kubernetes.io/limit-connections: "20"
+    # Upload limit: 10 MB file + multipart overhead = 11 MB, same as spring.servlet.multipart.max-request-size.
+    nginx.ingress.kubernetes.io/proxy-body-size: "11m"
+    # Live-refresh (SSE, /api/v1/events) sends a heartbeat every 25 s; 75 s keeps idle streams open.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "75"
+    # Do not buffer responses, so server-sent events reach the browser immediately.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+  # -- Extra annotations on the / (web) Ingress only.
+  webAnnotations:
+    # Static files: a generous limit that still stops floods.
+    nginx.ingress.kubernetes.io/limit-rps: "50"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "5"
+  # -- X-Request-Id: ingress-nginx ALREADY passes "X-Request-ID: $req_id" to every backend (controller setting
+  # generate-request-id, default true; it keeps a client-supplied id or generates a random one), and the API's
+  # RequestIdFilter logs it and returns it. So no annotation is needed. Setting this to true additionally adds a
+  # configuration-snippet that returns the id on static responses too; snippets are disabled by default in
+  # ingress-nginx >= 1.9 (allow-snippet-annotations) for security reasons, so leave false unless your
+  # controller explicitly allows them.
+  requestIdSnippet: false
+
+# ---------------------------------------------------------------------------------------------------------------
+# NetworkPolicies: deny all ingress in the namespace, then allow exactly the flows the architecture needs.
+# Egress is not restricted here because DB, S3, SFTP, SMTP and Keycloak endpoints differ per environment; add
+# egress rules (or use the cloud's security groups) if your platform requires it.
+# ---------------------------------------------------------------------------------------------------------------
+networkPolicy:
+  # -- Create the NetworkPolicies (needs a CNI that enforces them, e.g. Calico, Cilium, VPC CNI with policies).
+  enabled: true
+  # -- Namespace of the ingress controller (matched by the standard kubernetes.io/metadata.name label).
+  ingressControllerNamespace: ingress-nginx
+  # -- Pod labels of the ingress controller pods inside that namespace.
+  ingressControllerPodLabels:
+    app.kubernetes.io/name: ingress-nginx
+  # -- Namespace where Prometheus runs.
+  prometheusNamespace: observability
+  # -- Pod labels of the Prometheus server pods.
+  prometheusPodLabels:
+    app.kubernetes.io/name: prometheus
+
+# ---------------------------------------------------------------------------------------------------------------
+# Monitoring with the Prometheus Operator (kube-prometheus-stack): ServiceMonitor + PrometheusRule.
+# ---------------------------------------------------------------------------------------------------------------
+monitoring:
+  # -- Create ServiceMonitor and PrometheusRule (needs the monitoring.coreos.com CRDs).
+  enabled: false
+  # -- Extra labels on both objects so the Prometheus instance selects them (kube-prometheus-stack: release=<name>).
+  labels:
+    release: kube-prometheus-stack
+  serviceMonitor:
+    # -- Scrape interval. The DB-backed gauges cost one cheap query each per scrape, so 30 s is fine.
+    interval: 30s
+    # -- Scrape timeout.
+    scrapeTimeout: 10s
+  # -- Base URL for runbook links in alert annotations (runbook_url = <base>/<file>.md).
+  runbookBaseUrl: https://github.com/OWNER/pifa/blob/main/docs/runbooks
+  rules:
+    # -- Rejected files in one hour (per type and channel) that count as a spike.
+    rejectedFilesPerHour: 3
+    # -- SFTP outage heuristic: failed polls within 10 minutes. The worker polls every 60 s, so 10 minutes
+    # hold ~10 polls; 8 or more failures with no SFTP file ingested means no poll has really succeeded.
+    sftpFailedPolls10m: 8
+    # -- 5xx ratio that fires the API error alert (0.01 = 1%).
+    errorRatio: 0.01
+    # -- p95 latency threshold in seconds.
+    p95LatencySeconds: 2
+    # -- Container restarts within 30 minutes that fire the restart alert.
+    restartsIn30m: 2
+    # -- Days before certificate expiry to alert.
+    certExpiryDays: 21
+    # -- PromQL label matchers selecting the blackbox-exporter probes of PIFA endpoints. probe_ssl_earliest_cert_expiry
+    # only exists if the blackbox exporter probes the public host (and Keycloak, SFTP, ClamAV TLS) - install it
+    # and add a Probe/scrape job, otherwise this alert never fires.
+    certProbeSelector: 'job=~"blackbox.*", instance=~".*example\\.com.*"'

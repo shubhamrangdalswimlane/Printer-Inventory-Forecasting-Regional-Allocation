@@ -16,6 +16,8 @@ public class Violation {
     private final int rowNo;
     private final String column;
     private final String message;
+    /** Optional key of the thing the finding is about (e.g. a product id), so a UI can highlight it. */
+    private String subject;
 
     /**
      * @param code     stable machine code from PRD 8.4, e.g. {@code PRODUCT_UNKNOWN}
@@ -41,6 +43,31 @@ public class Violation {
     public static Violation warning(String code, int rowNo, String column, String message) {
         return new Violation(code, Severity.WARNING, rowNo, column, message);
     }
+
+    /**
+     * Builds an ERROR finding about a specific subject (used by the allocation rules).
+     *
+     * @param code    stable code, e.g. BR-VA-01
+     * @param subject key of the thing concerned, e.g. the product id
+     * @param column  region code or null
+     * @param message human-readable explanation
+     * @return the finding
+     */
+    public static Violation errorFor(String code, String subject, String column, String message) {
+        Violation v = new Violation(code, Severity.ERROR, 0, column, message);
+        v.subject = subject;
+        return v;
+    }
+
+    /** Same as {@link #errorFor} but with WARNING severity. */
+    public static Violation warningFor(String code, String subject, String column, String message) {
+        Violation v = new Violation(code, Severity.WARNING, 0, column, message);
+        v.subject = subject;
+        return v;
+    }
+
+    /** @return the subject key (e.g. product id), or null */
+    public String getSubject() { return subject; }
 
     /** @return the stable machine code */
     public String getCode() { return code; }

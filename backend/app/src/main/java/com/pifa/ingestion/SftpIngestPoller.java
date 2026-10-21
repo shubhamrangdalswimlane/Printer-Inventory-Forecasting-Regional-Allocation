@@ -7,7 +7,10 @@ import com.jcraft.jsch.Session;
 import com.jcraft.jsch.SftpATTRS;
 import com.jcraft.jsch.SftpException;
 import com.pifa.config.PifaProperties;
+import com.pifa.common.ApiException;
 import com.pifa.dataset.DatasetType;
+import com.pifa.golive.SalesHistoryImportService;
+import com.pifa.notify.NotificationService;
 import com.pifa.ingestion.IngestionService.IngestRequest;
 import com.pifa.ingestion.IngestionService.IngestResult;
 import java.io.ByteArrayInputStream;
@@ -34,7 +37,10 @@ import org.springframework.stereotype.Component;
  * {@link IngestionService} (PRD 8.2, architecture.md section 5).
  *
  * <p>Folder decides the dataset type: {@code /inbound/forecast} becomes a forecast upload (Forecaster
- * dashboard), {@code /inbound/inventory} an inventory upload (Planner dashboard).
+ * dashboard), {@code /inbound/inventory} an inventory upload (Planner dashboard), and - when
+ * {@code pifa.sftp.sales-dir} is set (Phase 7 sales/actuals feed) - {@code /inbound/sales} a monthly sales file
+ * imported into the sales history by {@link SalesHistoryImportService} (all-or-nothing; a rejected file gets an
+ * error report in the errors folder and the Admins are notified).
  *
  * <p>Safety properties:
  * <ul>
@@ -63,10 +69,19 @@ public class SftpIngestPoller {
     private final long maxBytes;
     private final IngestionService ingestion;
     private final DataSource dataSource;
+    private final com.pifa.ops.PifaMetrics metrics;
+    private final SalesHistoryImportService sales;
+    private final NotificationService notifications;
     /** name+folder -> "size:mtime" seen on the previous poll, used for the size-stable check. */
     private final Map<String, String> previous = new HashMap<>();
+    @org.springframework.beans.factory.annotation.Value("${pifa.jobs.enabled:true}")
+    private boolean jobsEnabled = true;
 
-    public SftpIngestPoller(PifaProperties props, IngestionService ingestion, DataSource dataSource) {
+    public SftpIngestPoller(PifaProperties props, IngestionService ingestion, DataSource dataSource, com.pifa.ops.PifaMetrics metrics,
+                            SalesHistoryImportService sales, NotificationService notifications) {
+        this.metrics = metrics;
+        this.sales = sales;
+        this.notifications = notifications;
         this.cfg = props.sftp();
         this.maxBytes = props.ingestion().maxFileBytes();
         this.ingestion = ingestion;
@@ -76,6 +91,7 @@ public class SftpIngestPoller {
     /** Scheduled entry point; the delay between polls comes from {@code pifa.sftp.poll-ms}. Never throws. */
     @Scheduled(fixedDelayString = "${pifa.sftp.poll-ms:60000}", initialDelayString = "${pifa.sftp.poll-ms:60000}")
     public void scheduledPoll() {
+        if (!jobsEnabled) return; // api pods do not poll; worker pods do
         try {
             pollOnce();
         } catch (RuntimeException e) {
@@ -111,9 +127,15 @@ public class SftpIngestPoller {
             session = connect();
             sftp = (ChannelSftp) session.openChannel("sftp");
             sftp.connect(10_000);
-            return pollFolder(sftp, cfg.forecastDir(), DatasetType.FORECAST_UPLOAD, "sftp-forecast")
-                + pollFolder(sftp, cfg.inventoryDir(), DatasetType.INVENTORY_UPLOAD, "sftp-inventory");
+            int n = pollFolder(sftp, cfg.forecastDir(), archiveName(DatasetType.FORECAST_UPLOAD), datasetHandler(DatasetType.FORECAST_UPLOAD, "sftp-forecast"))
+                + pollFolder(sftp, cfg.inventoryDir(), archiveName(DatasetType.INVENTORY_UPLOAD), datasetHandler(DatasetType.INVENTORY_UPLOAD, "sftp-inventory"));
+            if (salesEnabled()) n += pollFolder(sftp, cfg.salesDir(), "sales", this::importSales);
+            status(true, "Last poll OK, " + n + " file(s) processed");
+            return n;
         } catch (JSchException e) {
+            // Recorded for the Admin dashboard (FR-AD-04 "SFTP connectivity health") and logged for alerting.
+            status(false, "SFTP connection failed: " + e.getMessage());
+            if (metrics != null) metrics.sftpPollError();
             throw new IllegalStateException("SFTP connection failed: " + e.getMessage(), e);
         } finally {
             if (sftp != null) sftp.disconnect();
@@ -145,12 +167,12 @@ public class SftpIngestPoller {
      *
      * @param sftp    connected channel
      * @param dir     remote folder
-     * @param type    dataset type the folder maps to
-     * @param account name recorded as the source account and audit actor
+     * @param archive archive sub-folder for processed files
+     * @param handler what to do with each finished file
      * @return number of files processed
      */
     @SuppressWarnings("unchecked")
-    private int pollFolder(ChannelSftp sftp, String dir, DatasetType type, String account) {
+    private int pollFolder(ChannelSftp sftp, String dir, String archive, FileHandler handler) {
         int processed = 0;
         try {
             Vector<ChannelSftp.LsEntry> entries = sftp.ls(dir);
@@ -164,7 +186,7 @@ public class SftpIngestPoller {
                 previous.put(key, fingerprint);
                 if (!stable) continue; // first time seen or still changing: wait for the next poll
                 try {
-                    processFile(sftp, dir, name, a.getSize(), type, account);
+                    processFile(sftp, dir, name, a.getSize(), archive, handler);
                     previous.remove(key);
                     processed++;
                 } catch (RuntimeException | SftpException ex) {
@@ -177,8 +199,76 @@ public class SftpIngestPoller {
         return processed;
     }
 
-    /** Reads, ingests, reports on and archives one file. */
-    private void processFile(ChannelSftp sftp, String dir, String name, long size, DatasetType type, String account) throws SftpException {
+    /** What to do with one finished file. */
+    @FunctionalInterface
+    private interface FileHandler {
+        /**
+         * @param bytes the file (for an oversized file: a buffer one byte over the limit, so it is rejected by size)
+         * @param name  the file name
+         * @return the error report (CSV bytes) if the file was rejected, or null if it was accepted
+         * @throws RuntimeException to leave the file in place and retry on the next poll (e.g. database down)
+         */
+        byte[] handle(byte[] bytes, String name);
+    }
+
+    /** @return the archive sub-folder of a dataset type, e.g. {@code forecast_upload} (unchanged since Phase 1) */
+    private static String archiveName(DatasetType type) {
+        return type.name().toLowerCase();
+    }
+
+    /**
+     * @param type    FORECAST_UPLOAD or INVENTORY_UPLOAD
+     * @param account the SFTP account recorded as the file's source
+     * @return a handler that runs the forecast/inventory ingestion pipeline
+     */
+    private FileHandler datasetHandler(DatasetType type, String account) {
+        return (bytes, name) -> {
+            IngestResult r = ingestion.ingest(new IngestRequest(bytes, name, type, "SFTP", account, account));
+            log.info("SFTP file {} -> {} ({})", name, r.status(), r.label());
+            return "REJECTED".equals(r.status()) ? IngestionJobService.toCsv(r.findings()) : null;
+        };
+    }
+
+    /** @return true when the sales feed folder is configured */
+    private boolean salesEnabled() {
+        return cfg.salesDir() != null && !cfg.salesDir().isBlank();
+    }
+
+    /**
+     * Sales feed handler (Phase 7): imports a monthly sales workbook into the sales history.
+     * File-level problems (wrong layout, infected) and row problems reject the file; an unavailable virus scanner
+     * is rethrown so the file is retried. Every rejection notifies the Admins.
+     *
+     * @param bytes the file
+     * @param name  its name
+     * @return the error report CSV (one problem per line) if rejected, or null if imported
+     */
+    private byte[] importSales(byte[] bytes, String name) {
+        long start = System.nanoTime();
+        List<String> problems;
+        if (bytes.length > maxBytes) {
+            problems = List.of("File is larger than the limit of " + maxBytes + " bytes");
+        } else {
+            try {
+                problems = sales.importSales(bytes, name, "SFTP", "sftp-sales").problems();
+            } catch (ApiException e) {
+                if (e.getStatus().is5xxServerError()) throw e; // scanner unavailable: retry next poll
+                problems = List.of(e.getMessage());
+            }
+        }
+        boolean ok = problems.isEmpty();
+        if (metrics != null) metrics.ingestion("SALES", ok ? "VALID" : "REJECTED", "SFTP", System.nanoTime() - start);
+        log.info("SFTP sales file {} -> {}", name, ok ? "IMPORTED" : "REJECTED (" + problems.size() + " problems)");
+        if (ok) return null;
+        notifications.notifyRole("admin", null, "Sales file " + name + " was rejected",
+            problems.size() + " problem(s), first: " + problems.get(0) + ". The error report is in the SFTP errors folder.", null);
+        StringBuilder csv = new StringBuilder("problem\r\n");
+        for (String p : problems) csv.append('"').append(ExcelFiles.safe(p).replace("\"", "\"\"")).append("\"\r\n");
+        return csv.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    /** Reads, processes, reports on and archives one file. */
+    private void processFile(ChannelSftp sftp, String dir, String name, long size, String archive, FileHandler handler) throws SftpException {
         String path = dir + "/" + name;
         byte[] bytes;
         if (size > maxBytes) {
@@ -191,13 +281,12 @@ public class SftpIngestPoller {
                 throw new IllegalStateException("Cannot read " + path, e);
             }
         }
-        IngestResult r = ingestion.ingest(new IngestRequest(bytes, name, type, "SFTP", account, account));
-        log.info("SFTP file {} -> {} ({})", path, r.status(), r.label());
-        if ("REJECTED".equals(r.status())) {
+        byte[] errors = handler.handle(bytes, name);
+        if (errors != null) {
             String base = name.substring(0, name.length() - 5);
-            put(sftp, cfg.errorsDir() + "/" + base + "_errors.csv", IngestionJobService.toCsv(r.findings()));
+            put(sftp, cfg.errorsDir() + "/" + base + "_errors.csv", errors);
         }
-        archive(sftp, path, type, name, size > maxBytes ? null : bytes);
+        archive(sftp, path, archive, name, size > maxBytes ? null : bytes);
     }
 
     /**
@@ -209,12 +298,12 @@ public class SftpIngestPoller {
      *
      * @param sftp  connected channel
      * @param path  remote path of the processed file
-     * @param type  dataset type (names the archive sub-folder)
+     * @param archive archive sub-folder name
      * @param name  file name
      * @param bytes the file content for the copy fallback, or null if it was not read
      */
-    private void archive(ChannelSftp sftp, String path, DatasetType type, String name, byte[] bytes) throws SftpException {
-        String folder = cfg.archiveDir() + "/" + type.name().toLowerCase();
+    private void archive(ChannelSftp sftp, String path, String archive, String name, byte[] bytes) throws SftpException {
+        String folder = cfg.archiveDir() + "/" + archive;
         String target = folder + "/" + STAMP.format(OffsetDateTime.now(ZoneOffset.UTC)) + "_" + name;
         try {
             mkdirs(sftp, folder);
@@ -245,6 +334,17 @@ public class SftpIngestPoller {
         }
     }
 
+    /** Stores the poll outcome in {@code system_status} (key {@code sftp.poll}). Never throws. */
+    private void status(boolean ok, String text) {
+        try {
+            new org.springframework.jdbc.core.JdbcTemplate(dataSource).update(
+                "INSERT INTO system_status (key, value, ok, updated_at) VALUES ('sftp.poll', ?, ?, now()) "
+                    + "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, ok = EXCLUDED.ok, updated_at = now()", text, ok);
+        } catch (RuntimeException e) {
+            log.warn("Could not record SFTP status: {}", e.getMessage());
+        }
+    }
+
     /** Runs a single-value query on a raw connection and returns the first column of the first row. */
     private static Object scalar(Connection c, String sql) throws java.sql.SQLException {
         try (var st = c.createStatement(); var rs = st.executeQuery(sql)) {
@@ -255,6 +355,6 @@ public class SftpIngestPoller {
 
     /** @return the names this poller treats as inbound folders (used by tests to know where to drop files) */
     public List<String> inboundDirs() {
-        return List.of(cfg.forecastDir(), cfg.inventoryDir());
+        return salesEnabled() ? List.of(cfg.forecastDir(), cfg.inventoryDir(), cfg.salesDir()) : List.of(cfg.forecastDir(), cfg.inventoryDir());
     }
 }

@@ -7,7 +7,9 @@ import com.pifa.dataset.DatasetType;
 import com.pifa.ingestion.ExcelReader.RawCell;
 import com.pifa.ingestion.ExcelReader.RowData;
 import com.pifa.ingestion.ExcelReader.SheetData;
+import com.pifa.allocation.StockService;
 import com.pifa.forecast.WorkingCopyService;
+import com.pifa.parameters.RuleParameterService;
 import com.pifa.master.MasterDataService;
 import com.pifa.notify.NotificationService;
 import com.pifa.master.ProductNames;
@@ -83,6 +85,10 @@ public class IngestionService {
     private static final Pattern MONTH = Pattern.compile("^\\d{4}-(0[1-9]|1[0-2])$");
 
     private final RulesFacade rules;
+    private final RuleParameterService params;
+    private final StockService stock;
+    private final com.pifa.events.LiveEvents events;
+    private final com.pifa.ops.PifaMetrics metrics;
     private final MasterDataService master;
     private final DatasetRepository repo;
     private final FileStore files;
@@ -98,7 +104,12 @@ public class IngestionService {
     public IngestionService(RulesFacade rules, MasterDataService master, DatasetRepository repo, FileStore files,
                             VirusScanner scanner, AuditService audit, JdbcClient jdbc, JdbcTemplate jdbcTemplate,
                             TransactionTemplate tx, PifaProperties props, WorkingCopyService workingCopy,
-                            NotificationService notifications) {
+                            NotificationService notifications, RuleParameterService params, StockService stock,
+                            com.pifa.events.LiveEvents events, com.pifa.ops.PifaMetrics metrics) {
+        this.events = events;
+        this.metrics = metrics;
+        this.params = params;
+        this.stock = stock;
         this.workingCopy = workingCopy;
         this.notifications = notifications;
         this.rules = rules;
@@ -129,6 +140,14 @@ public class IngestionService {
      * @throws IllegalArgumentException if {@code req.type()} is not an upload type
      */
     public IngestResult ingest(IngestRequest req) {
+        long t0 = System.nanoTime();
+        IngestResult r = doIngest(req);
+        metrics.ingestion(req.type().name(), r.status(), req.channel(), System.nanoTime() - t0);
+        return r;
+    }
+
+    /** The actual pipeline; {@link #ingest} wraps it with metrics. */
+    private IngestResult doIngest(IngestRequest req) {
         if (!req.type().isUpload()) throw new IllegalArgumentException("Not an uploadable type: " + req.type());
         String sha = sha256(req.bytes());
         Prepared p = validate(req, sha);
@@ -161,7 +180,7 @@ public class IngestionService {
      */
     private Prepared validate(IngestRequest req, String sha) {
         Prepared p = new Prepared();
-        IngestionConfig cfg = new IngestionConfig(props.ingestion().maxQty(), props.ingestion().spikeFactor());
+        IngestionConfig cfg = new IngestionConfig(props.ingestion().maxQty(), params.current().values().spikeFactor());
 
         if (req.bytes().length > props.ingestion().maxFileBytes()) {
             p.violations.add(Violation.error("FILE_TYPE", 0, null, "File is larger than " + props.ingestion().maxFileBytes() / 1_048_576 + " MB"));
@@ -187,6 +206,7 @@ public class IngestionService {
         List<String> regions = master.activeRegionCodes();
         List<String> required = new ArrayList<>(req.type().fixedRequiredHeaders());
         Set<String> known = new HashSet<>(required);
+        known.add("Product_code"); // optional in both templates (Phase 7)
         if (forecast) {
             regions.forEach(r -> required.add(ExcelFiles.capitalise(r)));
             known.addAll(required);
@@ -200,6 +220,7 @@ public class IngestionService {
         if (sheet.hasErrors()) return p;
 
         Map<String, UUID> lookup = master.productLookup();
+        Map<String, UUID> codes = master.productCodeLookup();
         List<Object> facts = new ArrayList<>();
         Set<UUID> seenProducts = new HashSet<>();
         List<Object[]> lines = new ArrayList<>();
@@ -208,7 +229,7 @@ public class IngestionService {
             Map<String, Double> avg = avgSales6();
             String expectedMonth = sheet.rows().stream().map(r -> parseMonth(r.get("Forecast_Month"))).filter(m -> m != null).findFirst().orElse(null);
             for (RowData row : sheet.rows()) {
-                UUID pid = addProductFact(row, lookup, facts, seenProducts);
+                UUID pid = addProductFact(row, lookup, codes, facts, seenProducts, p.violations);
                 String m = parseMonth(row.get("Forecast_Month"));
                 facts.add(new MonthCell(row.rowNo(), "Forecast_Month", m != null, m, expectedMonth));
                 String comment = text(row.get("Comments"));
@@ -229,7 +250,7 @@ public class IngestionService {
             LocalDate firstDate = sheet.rows().stream().map(r -> parseDate(r.get("As_Of_Date"))).filter(d -> d != null).findFirst().orElse(null);
             String expectedMonth = sheet.rows().stream().map(r -> parseMonth(r.get("Planning_Month"))).filter(m -> m != null).findFirst().orElse(null);
             for (RowData row : sheet.rows()) {
-                UUID pid = addProductFact(row, lookup, facts, seenProducts);
+                UUID pid = addProductFact(row, lookup, codes, facts, seenProducts, p.violations);
                 QtyParse q = parseQty(row.get("Available_Qty"));
                 facts.add(new QtyCell(row.rowNo(), "Available_Qty", q.valid, q.value, q.reason, -1));
                 LocalDate d = parseDate(row.get("As_Of_Date"));
@@ -293,12 +314,48 @@ public class IngestionService {
         }
     }
 
-    /** Builds the {@link ProductRow} fact for a row and returns the matched product id (null if unknown/blank). */
-    private UUID addProductFact(RowData row, Map<String, UUID> lookup, List<Object> facts, Set<UUID> seen) {
+    /**
+     * Identifies the product of a row, builds its {@link ProductRow} fact and returns the matched product id.
+     *
+     * <p>Without a {@code Product_code} the name is matched (normalisation + aliases) as before. With a code
+     * (optional column, Phase 7) the code decides: an unknown code is reported like an unknown product, and a name
+     * that matches a <em>different</em> product than the code is an error (PRODUCT_CODE_MISMATCH), because one of the
+     * two upstream fields is wrong. The duplicate check runs on the product itself, so the same product listed once
+     * by name and once by alias or code is also caught.
+     *
+     * @param row        the spreadsheet row
+     * @param lookup     normalised name/alias to product id
+     * @param codes      normalised code to product id
+     * @param facts      rule facts (the ProductRow is added here)
+     * @param seen       products present in the file (for the "not in file" warning)
+     * @param violations findings decided in Java (the code mismatch)
+     * @return the product id, or null if blank or unknown
+     */
+    private UUID addProductFact(RowData row, Map<String, UUID> lookup, Map<String, UUID> codes, List<Object> facts, Set<UUID> seen,
+                                List<Violation> violations) {
         String raw = text(row.get("Product_name"));
         String norm = ProductNames.normalize(raw);
-        UUID pid = norm.isEmpty() ? null : lookup.get(norm);
-        facts.add(new ProductRow(row.rowNo(), raw, pid != null, norm));
+        UUID byName = norm.isEmpty() ? null : lookup.get(norm);
+        String code = ProductNames.normalizeCode(text(row.get("Product_code")));
+        UUID pid;
+        String shown;
+        boolean mismatch = false;
+        if (code.isEmpty()) {
+            pid = byName;
+            shown = raw;
+        } else {
+            pid = codes.get(code);
+            shown = raw == null ? "code " + code : raw + " (code " + code + ")";
+            if (pid != null && byName != null && !pid.equals(byName)) {
+                violations.add(Violation.error("PRODUCT_CODE_MISMATCH", row.rowNo(), "Product_code",
+                    "Product_code " + code + " and Product_name '" + raw + "' name different products"));
+                pid = null;
+                mismatch = true; // already reported; not also "unknown"
+            }
+        }
+        // Key for the duplicate rule: the product when known, otherwise the text, so unknown duplicates are still caught.
+        String key = pid != null ? pid.toString() : code.isEmpty() ? norm : "code:" + code;
+        facts.add(new ProductRow(row.rowNo(), shown, pid != null || mismatch, key));
         if (pid != null) seen.add(pid);
         return pid;
     }
@@ -387,14 +444,31 @@ public class IngestionService {
             repo.insertVersion(versionId, cycle.id(), req.type(), no, label, req.channel(), req.filename(), key, sha, p.rowCount, req.actor());
             insertLines(req.type(), versionId, p.lines.values().iterator().next());
 
+            // PRD 8.5: a forecast auto-activates only in FORECAST_DRAFT and only if the Admin setting allows it;
+            // an inventory file becomes active in any state up to PLANNING.
             boolean activate = req.type() == DatasetType.FORECAST_UPLOAD
-                ? "FORECAST_DRAFT".equals(cycle.state())
+                ? "FORECAST_DRAFT".equals(cycle.state()) && params.current().values().autoActivateForecast()
                 : INVENTORY_ACTIVATE_STATES.contains(cycle.state());
             if (activate) repo.activate(versionId);
-            // A newly active forecast replaces the Forecaster's working copy (edits are snapshotted first).
+            // A newly active forecast replaces the Forecaster's working copy (edits are snapshotted first);
+            // a newly active inventory replaces the cycle's stock (reserves are kept).
             if (activate && req.type() == DatasetType.FORECAST_UPLOAD) workingCopy.loadFromVersion(cycle.id(), versionId, req.actor());
+            if (activate && req.type() == DatasetType.INVENTORY_UPLOAD) stock.applyInventory(cycle.id(), versionId, req.actor());
+            if (!activate && req.type() == DatasetType.INVENTORY_UPLOAD) {
+                // Stored but not applied: the allocation is already approved or final (PRD 8.5).
+                String text = "Inventory file '" + req.filename() + "' arrived after the allocation was approved (cycle " + cycle.month()
+                    + " is " + cycle.state() + "). It was stored as " + label + " but not applied.";
+                notifications.notifyRole("admin", null, "Inventory changed after approval", text, cycle.id());
+                notifications.notifyRole("planner", null, "Inventory changed after approval", text, cycle.id());
+            }
+            if (!activate && req.type() == DatasetType.FORECAST_UPLOAD) {
+                // Stored but not activated: already published, or auto-activate is switched off (PRD 8.5).
+                notifications.notifyRole("forecaster", null, "New forecast file not activated",
+                    "Forecast file '" + req.filename() + "' was stored as " + label + " but not activated (cycle " + cycle.month() + " is " + cycle.state() + ").", cycle.id());
+            }
 
             UUID jobId = saveJob(req, sha, "VALID", versionId, p.violations);
+            events.publish(cycle.id(), "DATASET");
             audit.record(req.actor(), "UPLOAD", "dataset_version", versionId.toString(),
                 Map.of("label", label, "filename", String.valueOf(req.filename()), "channel", req.channel(), "activated", activate, "rows", p.rowCount));
             return new IngestResult(jobId, "VALID", versionId, label, activate, toFindings(p.violations));

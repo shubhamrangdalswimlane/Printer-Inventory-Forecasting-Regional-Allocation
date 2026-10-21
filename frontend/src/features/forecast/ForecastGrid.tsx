@@ -127,12 +127,12 @@ export default function ForecastGrid(props: {
     <section className="card">
       <h3>Forecast {mode === 'forecaster' ? '(published quantity — editable in draft)' : mode === 'regional' ? '(revise your region)' : '(read-only)'}</h3>
       <p>
-        <input placeholder="Search product…" value={search} onChange={(e) => { setPage(0); setSearch(e.target.value) }} />{' '}
+        <input aria-label="Search product" placeholder="Search product…" value={search} onChange={(e) => { setPage(0); setSearch(e.target.value) }} />{' '}
         {pendingCount > 0 && <button onClick={save} disabled={saving}>Save {pendingCount} change(s)</button>}{' '}
         {pendingCount > 0 && <button onClick={() => setPending({})}>Discard</button>}
         {mode === 'regional' && editableRevised.size > 0 && (
-          <span className="bulk"> Bulk: <input className="narrow" value={bulkPct} onChange={(e) => setBulkPct(e.target.value)} />% on selected rows
-            <input placeholder={`reason (needed above ${threshold}%)`} value={bulkReason} onChange={(e) => setBulkReason(e.target.value)} />
+          <span className="bulk"> Bulk: <input className="narrow" aria-label="Bulk change in percent" value={bulkPct} onChange={(e) => setBulkPct(e.target.value)} />% on selected rows
+            <input aria-label="Reason for the bulk change" placeholder={`reason (needed above ${threshold}%)`} value={bulkReason} onChange={(e) => setBulkReason(e.target.value)} />
             <button onClick={applyBulk} disabled={selected.size === 0}>Apply</button></span>
         )}
       </p>
@@ -166,7 +166,7 @@ export default function ForecastGrid(props: {
                       return (
                         <td key={r} className={cell.published !== cell.uploaded ? 'changed' : ''} title={cell.published !== cell.uploaded ? `file: ${cell.uploaded}` : ''}>
                           {canEditPublished
-                            ? <input className="cellinput" type="number" min={0} value={p ? p.value : cell.published} onChange={(e) => edit(cell, 'PUBLISHED', e.target.value)} />
+                            ? <input className="cellinput" aria-label={`${row.product} ${r} published`} type="number" min={0} value={p ? p.value : cell.published} onChange={(e) => edit(cell, 'PUBLISHED', e.target.value)} />
                             : cell.published}
                           {cell.published !== cell.uploaded && <small className="muted"> (file {cell.uploaded})</small>}
                         </td>
@@ -179,11 +179,11 @@ export default function ForecastGrid(props: {
                       <td key={r} className={shown !== cell.published ? 'changed' : ''}>
                         <span className="muted">{cell.published}</span>{' → '}
                         {canEditThis
-                          ? <input className="cellinput" type="number" min={0} value={shown} onChange={(e) => edit(cell, 'REVISED', e.target.value)} />
+                          ? <input className="cellinput" aria-label={`${row.product} ${r} revised`} type="number" min={0} value={shown} onChange={(e) => edit(cell, 'REVISED', e.target.value)} />
                           : <b>{cell.revised ?? '—'}</b>}
                         {shown !== cell.published && <small className={Math.abs(pct) > threshold ? 'error' : 'muted'}> {pct > 0 ? '+' : ''}{pct.toFixed(0)}%</small>}
                         {p && needsReason(p) && (
-                          <input className={`reason ${p.reason.trim() ? '' : 'missing'}`} placeholder="reason" value={p.reason}
+                          <input className={`reason ${p.reason.trim() ? '' : 'missing'}`} aria-label="Reason for the change" placeholder="reason" value={p.reason}
                             onChange={(e) => setPending((all) => ({ ...all, [cell.lineId]: { ...p, reason: e.target.value } }))} />
                         )}
                         {!p && cell.reason && <small className="muted" title={cell.reason}> ✎</small>}

@@ -25,11 +25,11 @@
       "publicClient": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
-      "redirectUris": ["http://localhost:5173/*"],
-      "webOrigins": ["http://localhost:5173"],
+      "redirectUris": ["http://localhost:5173/*", "http://localhost:4173/*", "http://web:4173/*"],
+      "webOrigins": ["http://localhost:5173", "http://localhost:4173", "http://web:4173"],
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "http://localhost:5173/*"
+        "post.logout.redirect.uris": "http://localhost:5173/*##http://localhost:4173/*##http://web:4173/*"
       },
       "protocolMappers": [
         {
@@ -50,20 +50,43 @@
           "name": "pifa-api-audience",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-audience-mapper",
-          "config": {
-            "included.client.audience": "pifa-api",
-            "access.token.claim": "true",
-            "id.token.claim": "false"
-          }
+          "config": { "included.client.audience": "pifa-api", "access.token.claim": "true", "id.token.claim": "false" }
         }
       ]
     },
     {
-      "clientId": "pifa-api",
-      "name": "PIFA API (resource)",
+      "clientId": "pifa-loadtest",
+      "name": "PIFA load test (DEV ONLY - password grant for k6; never in prod realm)",
       "enabled": true,
-      "bearerOnly": true
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": [],
+      "webOrigins": [],
+      "protocolMappers": [
+        {
+          "name": "regions",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "regions",
+            "claim.name": "regions",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "pifa-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": { "included.client.audience": "pifa-api", "access.token.claim": "true", "id.token.claim": "false" }
+        }
+      ]
     },
+    { "clientId": "pifa-api", "name": "PIFA API (resource)", "enabled": true, "bearerOnly": true },
     {
       "clientId": "pifa-automation",
       "name": "PIFA automation (CI smoke tests)",
@@ -72,54 +95,125 @@
       "serviceAccountsEnabled": true,
       "standardFlowEnabled": false,
       "secret": "dev-automation-secret"
+    },
+    {
+      "clientId": "pifa-admin-reader",
+      "name": "PIFA admin reader (read-only users view)",
+      "enabled": true,
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "secret": "dev-admin-reader-secret"
     }
   ],
   "users": [
     {
-      "username": "fiona.forecaster", "enabled": true, "emailVerified": true,
-      "email": "fiona.forecaster@example.test", "firstName": "Fiona", "lastName": "Forecaster",
-      "credentials": [{ "type": "password", "value": "dev-password", "temporary": false }],
+      "username": "fiona.forecaster",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "fiona.forecaster@example.test",
+      "firstName": "Fiona",
+      "lastName": "Forecaster",
+      "credentials": [
+        { "type": "password", "value": "dev-password", "temporary": false }
+      ],
       "realmRoles": ["forecaster"]
     },
     {
-      "username": "pat.planner", "enabled": true, "emailVerified": true,
-      "email": "pat.planner@example.test", "firstName": "Pat", "lastName": "Planner",
-      "credentials": [{ "type": "password", "value": "dev-password", "temporary": false }],
+      "username": "pat.planner",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "pat.planner@example.test",
+      "firstName": "Pat",
+      "lastName": "Planner",
+      "credentials": [
+        { "type": "password", "value": "dev-password", "temporary": false }
+      ],
       "realmRoles": ["planner"]
     },
     {
-      "username": "alex.admin", "enabled": true, "emailVerified": true,
-      "email": "alex.admin@example.test", "firstName": "Alex", "lastName": "Admin",
-      "credentials": [{ "type": "password", "value": "dev-password", "temporary": false }],
+      "username": "alex.admin",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "alex.admin@example.test",
+      "firstName": "Alex",
+      "lastName": "Admin",
+      "credentials": [
+        { "type": "password", "value": "dev-password", "temporary": false }
+      ],
       "realmRoles": ["admin"]
     },
     {
-      "username": "anita.north", "enabled": true, "emailVerified": true,
-      "email": "anita.north@example.test", "firstName": "Anita", "lastName": "North",
-      "attributes": { "regions": ["NORTH"] },
-      "credentials": [{ "type": "password", "value": "dev-password", "temporary": false }],
+      "username": "anita.north",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "anita.north@example.test",
+      "firstName": "Anita",
+      "lastName": "North",
+      "attributes": {
+        "regions": ["NORTH"]
+      },
+      "credentials": [
+        { "type": "password", "value": "dev-password", "temporary": false }
+      ],
       "realmRoles": ["regional_manager"]
     },
     {
-      "username": "evan.east", "enabled": true, "emailVerified": true,
-      "email": "evan.east@example.test", "firstName": "Evan", "lastName": "East",
-      "attributes": { "regions": ["EAST"] },
-      "credentials": [{ "type": "password", "value": "dev-password", "temporary": false }],
+      "username": "evan.east",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "evan.east@example.test",
+      "firstName": "Evan",
+      "lastName": "East",
+      "attributes": {
+        "regions": ["EAST"]
+      },
+      "credentials": [
+        { "type": "password", "value": "dev-password", "temporary": false }
+      ],
       "realmRoles": ["regional_manager"]
     },
     {
-      "username": "wendy.west", "enabled": true, "emailVerified": true,
-      "email": "wendy.west@example.test", "firstName": "Wendy", "lastName": "West",
-      "attributes": { "regions": ["WEST"] },
-      "credentials": [{ "type": "password", "value": "dev-password", "temporary": false }],
+      "username": "wendy.west",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "wendy.west@example.test",
+      "firstName": "Wendy",
+      "lastName": "West",
+      "attributes": {
+        "regions": ["WEST"]
+      },
+      "credentials": [
+        { "type": "password", "value": "dev-password", "temporary": false }
+      ],
       "realmRoles": ["regional_manager"]
     },
     {
-      "username": "sam.south", "enabled": true, "emailVerified": true,
-      "email": "sam.south@example.test", "firstName": "Sam", "lastName": "South",
-      "attributes": { "regions": ["SOUTH"] },
-      "credentials": [{ "type": "password", "value": "dev-password", "temporary": false }],
+      "username": "sam.south",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "sam.south@example.test",
+      "firstName": "Sam",
+      "lastName": "South",
+      "attributes": {
+        "regions": ["SOUTH"]
+      },
+      "credentials": [
+        { "type": "password", "value": "dev-password", "temporary": false }
+      ],
       "realmRoles": ["regional_manager"]
+    },
+    {
+      "username": "service-account-pifa-admin-reader",
+      "enabled": true,
+      "serviceAccountClientId": "pifa-admin-reader",
+      "clientRoles": {
+        "realm-management": ["view-users", "view-events"]
+      }
     }
-  ]
+  ],
+  "eventsEnabled": true,
+  "eventsExpiration": 7776000,
+  "enabledEventTypes": ["LOGIN", "LOGIN_ERROR", "LOGOUT"]
 }

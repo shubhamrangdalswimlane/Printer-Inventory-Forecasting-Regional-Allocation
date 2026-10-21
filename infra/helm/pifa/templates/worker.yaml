@@ -1,0 +1,53 @@
+# worker.yaml - the "worker" workload: the SAME image as the api, with background jobs and SFTP polling switched
+# on (PIFA_JOBS_ENABLED=true, PIFA_SFTP_ENABLED=true). Two replicas are safe: every job first takes a PostgreSQL
+# advisory lock (ShedLock), so only one replica runs it and the other takes over if that pod dies. There is no
+# HPA because extra replicas would only wait on the same locks. The Service exists only so Prometheus can
+# scrape the worker's metrics; the worker receives no user traffic.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pifa.fullname" . }}-worker
+  labels:
+    {{- include "pifa.componentLabels" (dict "root" . "component" "worker") | nindent 4 }}
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    # One at a time, keeping one worker (the lock holder or its standby) running throughout.
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  selector:
+    matchLabels:
+      {{- include "pifa.selectorLabels" (dict "root" . "component" "worker") | nindent 6 }}
+  template:
+    {{- include "pifa.backendPodTemplate" (dict "root" . "component" "worker" "cfg" .Values.worker "worker" true) | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pifa.fullname" . }}-worker
+  labels:
+    {{- include "pifa.componentLabels" (dict "root" . "component" "worker") | nindent 4 }}
+    # Selected by the ServiceMonitor.
+    pifa.example.com/metrics: "true"
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "pifa.selectorLabels" (dict "root" . "component" "worker") | nindent 4 }}
+  ports:
+    # Metrics only. No http port: the worker is not part of the request path.
+    - { name: management, port: 9091, targetPort: management, protocol: TCP }
+{{- if .Values.worker.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "pifa.fullname" . }}-worker
+  labels:
+    {{- include "pifa.componentLabels" (dict "root" . "component" "worker") | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.worker.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "pifa.selectorLabels" (dict "root" . "component" "worker") | nindent 6 }}
+{{- end }}

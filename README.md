@@ -1,10 +1,21 @@
 # PIFA — Printer Inventory Forecasting & Regional Allocation
 
-Docs: [PRD](docs/PRD.md) · [Architecture](docs/architecture.md) · [Phases](docs/Phase.md) · [ADRs](docs/adr)
+Docs: [PRD](docs/PRD.md) · [Architecture](docs/architecture.md) · [Phases](docs/Phase.md) · [ADRs](docs/adr) ·
+[Runbooks](docs/runbooks/README.md) · [UAT scripts](docs/uat/README.md) · [Training](docs/training/README.md) ·
+[Cutover](docs/go-live/cutover-runbook.md)
 
 ## Status
-Phase 0 (foundations), most of Phase 1 (data foundation) and Phase 2 (forecast workflow) are built. See the
-"Phase 1 scope" and "Phase 2 scope" sections below for what is and is not done.
+All seven phases have code and documentation. Phases 3 to 7 are summarised below; Phases 1 and 2 have their own
+sections further down. What still needs people and real environments: UAT with the business, real data, the pentest,
+the DR drill, and a `terraform apply` against real AWS and Keycloak.
+
+| Phase | What is in the repository |
+|---|---|
+| 3 Planning and allocation | Reserves, the Drools allocation strategy and validation rules, a 10k-product proposal in about 1-2 s, transfers (request, offer, direct), approval snapshots stamped with ruleset, parameter and inventory versions |
+| 4 Finalization and Admin | Region finalize and un-finalize, FINAL snapshot, Admin reopen, the Admin dashboard (overview, analytics, master data, rule parameters, audit search and export, cycles, users), audit hash-chain verification, live updates (SSE) |
+| 5 Production hardening | S3 storage, ClamAV over TLS, Prometheus metrics, request ids, partitioned audit tables with retention, `application-prod.yml`, Dockerfiles (API and nginx web), Helm chart and alerts (`infra/helm`, `infra/monitoring`), Terraform for AWS and the Keycloak prod realm (`infra/terraform`), [runbooks](docs/runbooks/README.md), a k6 load test (`loadtest/`), and the Playwright E2E suite (`e2e/`) |
+| 6 UAT and go-live | **Admin, Go-live** tab and `/api/v1/admin/go-live/*`: readiness check against the go-live checklist, product matching report with suggestions, real sales-history import, parallel-run reconciliation. Plus UAT scripts, training guides and the cutover runbook |
+| 7 Roadmap | SFTP sales feed (`PIFA_SFTP_SALES_DIR`, account `sftp-sales`), constrained split by each product's historical sales share (rule parameter *split basis*), hourly deadline reminders (due within 24 h, and overdue), and an optional `Product_code` column in the forecast, inventory and product files |
 
 ## Layout
 ```
@@ -31,14 +42,36 @@ if Postgres is not on localhost). Two tests skip themselves unless an environmen
 | Test | Needs | Variables |
 |---|---|---|
 | `SftpPollerTest` | the compose `sftp` service | `PIFA_TEST_SFTP_HOST`, `PIFA_TEST_SFTP_PORT` |
-| `ClamAvScannerTest` | the compose `clamav` service | `PIFA_TEST_CLAMAV_HOST` |
+| `ClamAvScannerTest` | the compose `clamav` + `clamav-tls` services | `PIFA_TEST_CLAMAV_HOST` (a name in the certificate, e.g. `localhost`), `PIFA_TEST_CLAMAV_PORT` (3311), `PIFA_TEST_CLAMAV_CA` (PEM file; get it with `docker compose -f infra/docker-compose.yml cp clamav-tls:/certs/ca.pem ./clamav-ca.pem`), optional `PIFA_TEST_CLAMAV_ALT_HOST` (an address not in the certificate, e.g. `127.0.0.2`) |
 | `MailOutboxTest` | the compose `mailpit` service | `PIFA_TEST_SMTP_HOST`, `PIFA_TEST_MAILPIT_API` (e.g. `http://localhost:8025`) |
+
+### Virus scanning (ClamAV over TLS)
+clamd speaks plain TCP, so the application never connects to it directly. In compose, `clamav` is not published to the
+host; `clamav-tls` terminates TLS on port 3311 and forwards to it, with a self-signed development certificate made by
+`clamav-cert`. To scan uploads locally set `PIFA_CLAMAV_ENABLED=true` and `PIFA_CLAMAV_CA_CERT=<path to ca.pem>`
+(extract it as shown above). The client verifies the certificate and host name and negotiates TLS 1.2/1.3 only; there is
+no plain-text mode. In production put clamd behind a TLS sidecar with a certificate from the organisation CA.
 
 ### Trying the ingestion flow
 1. Sign in as `alex.admin`, open the Admin dashboard, click **Generate next month** (synthetic forecast + inventory).
 2. Sign in as `fiona.forecaster`: upload, compare, activate and delete forecast versions.
 3. Sign in as `pat.planner`: the same for inventory.
 4. To exercise SFTP, set `PIFA_SFTP_ENABLED=true` and drop an `.xlsx` into `/inbound/forecast` as `sftp-forecast` (password `forecast-dev`, port 2222). Upload as `*.part` and rename when complete.
+
+### Load test (k6)
+The dev realm has a **dev-only** password-grant client, `pifa-loadtest`, so k6 can get tokens. It must never be
+added to a real realm. With the stack running on the `pifa-net` network:
+```bash
+docker run --rm -i --network pifa-net -e BASE_URL=http://pifa-api:8080 -e KC_URL=http://keycloak:8081/realms/pifa-dev grafana/k6:0.57.0 run - < loadtest/k6-planning.js
+```
+The thresholds are the targets: reads p95 < 1 s, allocation preview p95 < 5 s, errors < 1%. k6 fails the run when
+a target is missed.
+
+### Production configuration
+Run with `SPRING_PROFILES_ACTIVE=prod` ([application-prod.yml](backend/app/src/main/resources/application-prod.yml)).
+It enables JSON logs, S3, ClamAV, strict SFTP host keys and mail, and keeps the synthetic generator off. The same
+image runs as API pods (`PIFA_JOBS_ENABLED=false`) and worker pods (`true`). Only the workers run SFTP polling,
+mail, reminders and the nightly jobs. `GET /api/v1/admin/go-live/readiness` shows which go-live checks still fail.
 
 ### Trying the forecast workflow
 1. As `alex.admin`: **Generate next month** creates cycle `YYYY-MM` with a forecast and inventory.

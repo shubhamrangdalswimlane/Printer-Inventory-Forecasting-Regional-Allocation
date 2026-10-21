@@ -1,0 +1,150 @@
+# values-prod.yaml - example overrides for production (architecture.md 13.1/13.2: real data only, multi-AZ,
+# managed PostgreSQL and S3, secrets from the secret manager, MFA realm). Install with:
+#   helm upgrade --install pifa infra/helm/pifa -n pifa -f infra/helm/pifa/values-prod.yaml \
+#     --set image.digest=sha256:<digest of the released image>
+# Several values below restate the safe defaults on purpose, so a reviewer sees them in the prod file.
+
+image:
+  # -- Released image; pin by digest (--set image.digest=...) so a re-pushed tag cannot change production.
+  repository: ghcr.io/OWNER/pifa-api
+
+config:
+  # -- Production Spring profile.
+  springProfilesActive: prod
+  # -- Production realm (MFA for Admin and Planner).
+  oidcIssuer: https://sso.example.com/realms/pifa
+  # -- In-cluster key URL (Keycloak runs in the "identity" namespace).
+  jwkSetUri: http://keycloak.identity.svc:8080/realms/pifa/protocol/openid-connect/certs
+  db:
+    # -- RDS Multi-AZ, TLS with full certificate verification.
+    url: jdbc:postgresql://pifa-db.prod.example.com:5432/pifa?sslmode=verify-full
+  storage:
+    # -- S3 with versioning and SSE-KMS.
+    type: s3
+    s3:
+      bucket: pifa-files-prod
+      region: eu-west-1
+      # -- Empty = AWS S3.
+      endpoint: ""
+      kms: true
+  clamav:
+    # -- Every file is scanned in production.
+    enabled: true
+  sftp:
+    # -- AWS Transfer Family endpoint.
+    host: sftp.example.com
+    port: 22
+    user: pifa-worker
+    strictHostKey: true
+  mail:
+    # -- Notifications on, through SES SMTP.
+    enabled: true
+    smtpHost: email-smtp.eu-west-1.amazonaws.com
+    smtpPort: 587
+  # -- NEVER synthetic data in production.
+  syntheticEnabled: false
+  keycloak:
+    # -- Admin "users & roles" view reads the prod realm.
+    adminUrl: http://keycloak.identity.svc:8080
+    realm: pifa
+  # -- Keep partitions until the long-term audit export is in place.
+  retentionDropPartitions: false
+
+otel:
+  # -- Traces to Tempo through the collector.
+  enabled: true
+  endpoint: http://otel-collector.observability.svc:4318
+
+serviceAccount:
+  # -- IRSA role with access to the bucket and its KMS key only.
+  roleArn: arn:aws:iam::123456789012:role/pifa-prod-backend
+
+api:
+  autoscaling:
+    enabled: true
+    # -- 3 minimum = one per availability zone.
+    minReplicas: 3
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 70
+  pdb:
+    enabled: true
+    # -- Keep 2 of 3 during drains.
+    minAvailable: 2
+  resources:
+    requests: { cpu: "1", memory: 1536Mi }
+    limits: { cpu: "2", memory: 3Gi }
+
+worker:
+  # -- Active + standby (DB locks make extra replicas pure failover).
+  replicas: 2
+  pdb:
+    enabled: true
+    minAvailable: 1
+  resources:
+    requests: { cpu: 500m, memory: 1536Mi }
+    limits: { cpu: "2", memory: 3Gi }
+
+web:
+  # -- One nginx per zone.
+  replicas: 3
+  pdb:
+    enabled: true
+    minAvailable: 2
+  image:
+    # -- SPA image built with VITE_OIDC_AUTHORITY=https://sso.example.com/realms/pifa; pin the release tag.
+    repository: ghcr.io/OWNER/pifa-web
+    tag: "0.1.0"
+  # -- Production Keycloak origin for the CSP.
+  keycloakOrigin: https://sso.example.com
+
+clamav:
+  enabled: true
+  # -- One scanner per zone.
+  replicas: 3
+  pdb:
+    enabled: true
+    minAvailable: 2
+  # -- Private signature mirror: production nodes have no general internet egress.
+  databaseMirror: clamav-mirror.example.com
+  tls:
+    certManager:
+      # -- Internal certificate from the organisation's CA issuer.
+      enabled: true
+      issuerRef:
+        name: corporate-internal-ca
+        kind: ClusterIssuer
+        group: cert-manager.io
+
+secrets:
+  clamavCa:
+    # -- Trust the CA cert-manager stores with the certificate (key ca.crt).
+    name: pifa-clamav-tls
+    key: ca.crt
+
+ingress:
+  enabled: true
+  className: nginx
+  host: pifa.example.com
+  tlsSecretName: pifa-prod-tls
+  annotations:
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: letsencrypt
+
+externalSecrets:
+  # -- All secrets from AWS Secrets Manager.
+  enabled: true
+  secretStoreRef:
+    name: aws-secrets-manager
+    kind: ClusterSecretStore
+
+networkPolicy:
+  enabled: true
+
+monitoring:
+  # -- ServiceMonitor + alert rules on (routed to on-call by Alertmanager).
+  enabled: true
+  labels:
+    release: kube-prometheus-stack
+  runbookBaseUrl: https://github.com/OWNER/pifa/blob/main/docs/runbooks
+  rules:
+    certProbeSelector: 'job=~"blackbox.*", instance=~".*example\\.com.*"'

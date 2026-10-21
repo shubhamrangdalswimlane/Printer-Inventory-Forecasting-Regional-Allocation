@@ -22,4 +22,24 @@ public final class ProductNames {
         String s = Normalizer.normalize(raw, Normalizer.Form.NFKC).trim().replaceAll("\\s+", " ");
         return s.toLowerCase(Locale.ROOT);
     }
+
+    /** Allowed product codes after normalisation: letters, digits, dot, dash, underscore; 1..50 characters. */
+    private static final java.util.regex.Pattern CODE = java.util.regex.Pattern.compile("^[A-Z0-9._-]{1,50}$");
+
+    /**
+     * Normalises a {@code Product_code} (Phase 7): NFKC, trim, upper-case. Codes are identifiers, so inner spaces are
+     * not collapsed: {@code "prn m100"} is simply invalid.
+     *
+     * @param raw the code as typed; may be null
+     * @return the normalised code, or "" for null/blank input
+     */
+    public static String normalizeCode(String raw) {
+        if (raw == null) return "";
+        return Normalizer.normalize(raw, Normalizer.Form.NFKC).trim().toUpperCase(Locale.ROOT);
+    }
+
+    /** @param code a normalised code @return true if it is a valid code (see {@link #CODE}) */
+    public static boolean isValidCode(String code) {
+        return CODE.matcher(code).matches();
+    }
 }

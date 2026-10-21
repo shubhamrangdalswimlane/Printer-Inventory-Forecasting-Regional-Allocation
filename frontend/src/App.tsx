@@ -5,26 +5,33 @@
  * -> redirect from "/" to the user's landing dashboard -> the dashboard for that role.
  *
  * Every dashboard shows the cycle bar (selector + state + per-region progress) and then the panels of
- * that role. The panels only reflect what the backend allows (see GET /cycles/{id}/permissions); the
- * backend re-checks every action.
+ * that role for the cycle's current stage. Panels only reflect what the backend allows (see
+ * GET /cycles/{id}/permissions); the backend re-checks every action. Live events from the server reload
+ * the panels when someone else changes the cycle.
  */
 import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from 'react-oidc-context'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { createApi, type Api } from './api'
+import AdminDashboard from './features/admin/AdminDashboard'
+import { RuleParametersTab } from './features/admin/AdminTabs'
 import CycleBar from './features/cycle/CycleBar'
 import { useCycle } from './features/cycle/useCycle'
+import { useLiveEvents } from './features/cycle/useLiveEvents'
 import IngestionPanel from './features/datasets/IngestionPanel'
-import SyntheticPanel from './features/datasets/SyntheticPanel'
 import UploadPanel from './features/datasets/UploadPanel'
 import VersionHistoryPanel from './features/datasets/VersionHistoryPanel'
 import ForecastGrid from './features/forecast/ForecastGrid'
 import ForecasterActions from './features/forecast/ForecasterActions'
 import ValidationPanel from './features/forecast/ValidationPanel'
 import NotificationBell from './features/notifications/NotificationBell'
+import AllocationActions from './features/planning/AllocationActions'
+import AllocationGrid from './features/planning/AllocationGrid'
+import FinalizationMonitor from './features/planning/FinalizationMonitor'
 import PlannerActions from './features/planning/PlannerActions'
 import RegionalActions from './features/regional/RegionalActions'
 import SalesAnalysisPanel from './features/regional/SalesAnalysisPanel'
+import TransferPanel from './features/regional/TransferPanel'
 
 /** Shape of the JSON returned by the backend GET /api/v1/me (see MeController.MeResponse). */
 type Me = { username: string; roles: string[]; regions: string[]; landing: string }
@@ -40,6 +47,9 @@ const DASHBOARDS: Record<string, { title: string; role: string }> = {
   '/planner': { title: 'Planner dashboard', role: 'planner' },
   '/admin': { title: 'Admin dashboard', role: 'admin' },
 }
+
+/** Cycle states in which an allocation exists. */
+const ALLOCATION_STATES = ['PLANNING', 'REGIONAL_FINALIZATION', 'FINAL']
 
 /**
  * Custom hook: loads the current user's profile from the backend.
@@ -65,15 +75,10 @@ function useMe(token: string | undefined) {
 /**
  * Renders one dashboard page.
  *
- * - Forecaster: upload, publish/recall, validation, editable forecast grid, ingestion, version history.
- * - Regional Manager: my tasks + submit, sales analysis, revise-your-region grid.
- * - Planner: forecast workflow (return / proceed), read-only forecast, inventory upload and versions.
- * - Admin: synthetic data controls, read-only forecast, ingestion monitor, all versions.
- *
  * @param props.path  the route path, used to look up the title and required role in DASHBOARDS
  * @param props.me    the signed-in user's profile
  * @param props.api   API client built from the current access token
- * @param props.token the raw access token (for the admin synthetic panel)
+ * @param props.token the raw access token (live events, admin synthetic panel)
  * @returns the dashboard, or an "Access denied" message when the user lacks the role.
  *          This is a UX guard only, not a security control.
  */
@@ -82,7 +87,9 @@ function Dashboard({ path, me, api, token }: { path: string; me: Me; api: Api; t
   const cycle = useCycle(api)
   const cid = cycle.selectedId
   const key = cycle.version // changes after every reload, so child panels refetch
-  const draft = cycle.perms?.state === 'FORECAST_DRAFT'
+  const state = cycle.perms?.state ?? ''
+  // Someone else changed this cycle: reload (debounced inside the hook).
+  useLiveEvents(token, cid, cycle.reload)
   if (!me.roles.includes(d.role)) return <p>Access denied for your role.</p>
   return (
     <section>
@@ -95,8 +102,9 @@ function Dashboard({ path, me, api, token }: { path: string; me: Me; api: Api; t
         <>
           <UploadPanel api={api} kind="forecast" onDone={cycle.reload} />
           {cid && <ForecasterActions api={api} cycleId={cid} perms={cycle.perms} onDone={cycle.reload} />}
-          {cid && draft && <ValidationPanel api={api} cycleId={cid} refreshKey={key} />}
-          {cid && <ForecastGrid api={api} cycleId={cid} mode={draft ? 'forecaster' : 'readonly'} perms={cycle.perms} refreshKey={key} onSaved={cycle.reload} />}
+          {cid && state === 'FORECAST_DRAFT' && <ValidationPanel api={api} cycleId={cid} refreshKey={key} />}
+          {cid && <ForecastGrid api={api} cycleId={cid} mode={state === 'FORECAST_DRAFT' ? 'forecaster' : 'readonly'} perms={cycle.perms} refreshKey={key} onSaved={cycle.reload} />}
+          {cid && ALLOCATION_STATES.includes(state) && <AllocationGrid api={api} cycleId={cid} mode="readonly" perms={cycle.perms} refreshKey={key} onSaved={cycle.reload} />}
           <IngestionPanel api={api} refreshKey={key} />
           <VersionHistoryPanel api={api} type="FORECAST_UPLOAD" canActivate canDelete isAdmin={false} refreshKey={key} />
         </>
@@ -105,6 +113,12 @@ function Dashboard({ path, me, api, token }: { path: string; me: Me; api: Api; t
       {path === '/regional' && cid && (
         <>
           <RegionalActions api={api} cycleId={cid} detail={cycle.detail} perms={cycle.perms} regions={me.regions} onDone={cycle.reload} />
+          {['REGIONAL_FINALIZATION', 'FINAL'].includes(state) && (
+            <>
+              <AllocationGrid api={api} cycleId={cid} mode="regional" perms={cycle.perms} myRegions={me.regions} refreshKey={key} onSaved={cycle.reload} />
+              {state === 'REGIONAL_FINALIZATION' && <TransferPanel api={api} cycleId={cid} perms={cycle.perms} username={me.username} myRegions={me.regions} refreshKey={key} onChanged={cycle.reload} />}
+            </>
+          )}
           {me.regions.length > 0 && <SalesAnalysisPanel api={api} cycleId={cid} regions={me.regions} refreshKey={key} />}
           <ForecastGrid api={api} cycleId={cid} mode="regional" perms={cycle.perms} refreshKey={key} onSaved={cycle.reload} />
         </>
@@ -113,22 +127,23 @@ function Dashboard({ path, me, api, token }: { path: string; me: Me; api: Api; t
       {path === '/planner' && (
         <>
           {cid && <PlannerActions api={api} cycleId={cid} detail={cycle.detail} perms={cycle.perms} onDone={cycle.reload} />}
-          {cid && <ForecastGrid api={api} cycleId={cid} mode="readonly" perms={cycle.perms} refreshKey={key} onSaved={cycle.reload} />}
+          {cid && ALLOCATION_STATES.includes(state) && (
+            <>
+              <AllocationActions api={api} cycleId={cid} perms={cycle.perms} refreshKey={key} onDone={cycle.reload} />
+              <FinalizationMonitor api={api} cycleId={cid} detail={cycle.detail} perms={cycle.perms} onDone={cycle.reload} />
+              {state === 'REGIONAL_FINALIZATION' && <TransferPanel api={api} cycleId={cid} perms={cycle.perms} username={me.username} myRegions={[]} refreshKey={key} onChanged={cycle.reload} />}
+              <AllocationGrid api={api} cycleId={cid} mode="planner" perms={cycle.perms} refreshKey={key} onSaved={cycle.reload} />
+            </>
+          )}
+          {cid && !ALLOCATION_STATES.includes(state) && <ForecastGrid api={api} cycleId={cid} mode="readonly" perms={cycle.perms} refreshKey={key} onSaved={cycle.reload} />}
           <UploadPanel api={api} kind="inventory" onDone={cycle.reload} />
           <IngestionPanel api={api} refreshKey={key} />
           <VersionHistoryPanel api={api} type="INVENTORY_UPLOAD" canActivate canDelete isAdmin={false} refreshKey={key} />
+          <details className="card"><summary>Rule parameters (read-only)</summary><RuleParametersTab api={api} editable={false} /></details>
         </>
       )}
 
-      {path === '/admin' && (
-        <>
-          <SyntheticPanel token={token} onChanged={cycle.reload} />
-          {cid && <ForecastGrid api={api} cycleId={cid} mode="readonly" perms={cycle.perms} refreshKey={key} onSaved={cycle.reload} />}
-          <IngestionPanel api={api} refreshKey={key} />
-          <VersionHistoryPanel api={api} type="FORECAST_UPLOAD" canActivate canDelete isAdmin refreshKey={key} />
-          <VersionHistoryPanel api={api} type="INVENTORY_UPLOAD" canActivate canDelete isAdmin refreshKey={key} />
-        </>
-      )}
+      {path === '/admin' && <AdminDashboard api={api} token={token} cycle={cycle} />}
     </section>
   )
 }

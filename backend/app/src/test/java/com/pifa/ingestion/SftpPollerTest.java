@@ -39,6 +39,7 @@ import org.springframework.test.context.TestPropertySource;
     "pifa.sftp.strict-host-key=false",
     "pifa.sftp.host=${PIFA_TEST_SFTP_HOST:localhost}",
     "pifa.sftp.port=${PIFA_TEST_SFTP_PORT:22}",
+    "pifa.sftp.sales-dir=/inbound/sales",
     "pifa.sftp.poll-ms=3600000"   // effectively off: the test calls pollOnce() itself
 })
 class SftpPollerTest {
@@ -50,6 +51,7 @@ class SftpPollerTest {
     @Autowired SftpIngestPoller poller;
     @Autowired SyntheticDataService synthetic;
     @Autowired DatasetRepository repo;
+    @Autowired com.pifa.master.MasterDataService master;
     @Autowired org.springframework.jdbc.core.simple.JdbcClient jdbc;
     @Autowired org.springframework.transaction.support.TransactionTemplate tx;
 
@@ -88,6 +90,59 @@ class SftpPollerTest {
         }
         com.pifa.TestData.wipeCycles(tx, jdbc, MONTH);
         synthetic.purgeAll(ADMIN);
+    }
+
+    /**
+     * Phase 7 sales feed: a valid sales file is imported into sales_history with source SFTP and archived;
+     * a file naming an unknown product is rejected as a whole, with an error CSV for the producer.
+     */
+    @Test
+    void salesFeedImportsGoodFilesAndRejectsBadOnes() throws Exception {
+        synthetic.purgeAll(ADMIN);
+        String product = "Test Sales Feed Printer S1";
+        java.util.UUID pid = master.addProduct(product, "MANUAL");
+        try {
+            String[] h = {"Product_name", "Month", "North", "East", "West", "South"};
+            byte[] good = sheet(h, new Object[][]{{product, "2025-03", 7, 8, 9, 10}});
+            byte[] bad = sheet(h, new Object[][]{{product, "2025-04", 1, 1, 1, 1}, {"No Such Printer", "2025-04", 1, 1, 1, 1}});
+            String host = System.getenv("PIFA_TEST_SFTP_HOST");
+            int port = Integer.parseInt(System.getenv().getOrDefault("PIFA_TEST_SFTP_PORT", "22"));
+            try (Remote r = new Remote("sftp-sales", "sales-dev", host, port)) {
+                r.put("/inbound/sales/SALES_good.xlsx", good);
+                r.put("/inbound/sales/SALES_bad.xlsx", bad);
+            }
+            poller.pollOnce();
+            assertThat(poller.pollOnce()).isEqualTo(2);
+
+            assertThat(jdbc.sql("SELECT COALESCE(SUM(qty), 0) FROM sales_history WHERE product_id = :p AND source = 'SFTP'")
+                .param("p", pid).query(Long.class).single()).as("only the good file was imported").isEqualTo(34);
+            try (Remote worker = new Remote("pifa-worker", "worker-dev", host, port)) {
+                assertThat(worker.list("/inbound/sales")).noneMatch(n -> n.endsWith(".xlsx"));
+                assertThat(worker.get("/outbound/errors/SALES_bad_errors.csv")).contains("No Such Printer");
+                worker.delete("/outbound/errors/SALES_bad_errors.csv");
+            }
+        } finally {
+            jdbc.sql("DELETE FROM sales_history WHERE product_id = :p").param("p", pid).update();
+            jdbc.sql("DELETE FROM product WHERE id = :p").param("p", pid).update();
+        }
+    }
+
+    /** @return a one-sheet "Sales" workbook with the given header and rows */
+    private static byte[] sheet(String[] headers, Object[][] rows) throws Exception {
+        try (var wb = new org.apache.poi.xssf.usermodel.XSSFWorkbook(); var out = new java.io.ByteArrayOutputStream()) {
+            var s = wb.createSheet("Sales");
+            var hr = s.createRow(0);
+            for (int i = 0; i < headers.length; i++) hr.createCell(i).setCellValue(headers[i]);
+            for (int r = 0; r < rows.length; r++) {
+                var row = s.createRow(r + 1);
+                for (int c = 0; c < rows[r].length; c++) {
+                    if (rows[r][c] instanceof Number n) row.createCell(c).setCellValue(n.doubleValue());
+                    else row.createCell(c).setCellValue(rows[r][c].toString());
+                }
+            }
+            wb.write(out);
+            return out.toByteArray();
+        }
     }
 
     /** Minimal SFTP client for the test (upload, list, read, delete). */

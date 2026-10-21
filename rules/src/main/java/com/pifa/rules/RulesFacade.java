@@ -1,11 +1,16 @@
 package com.pifa.rules;
 
+import com.pifa.rules.model.AllocationConfig;
+import com.pifa.rules.model.AllocationDirective;
+import com.pifa.rules.model.AllocationLine;
 import com.pifa.rules.model.Classification;
 import com.pifa.rules.model.ForecastConfig;
 import com.pifa.rules.model.IngestionConfig;
-import com.pifa.rules.model.PublishCheck;
 import com.pifa.rules.model.ProductStock;
+import com.pifa.rules.model.PublishCheck;
+import com.pifa.rules.model.TransferCheck;
 import com.pifa.rules.model.Violation;
+import com.pifa.rules.model.WorkflowCheck;
 import java.util.ArrayList;
 import java.util.List;
 import org.kie.api.KieServices;
@@ -36,7 +41,7 @@ import org.kie.internal.io.ResourceFactory;
 public class RulesFacade {
 
     /** Version of the ruleset; stamped on results so they can be explained later. Bump with every DRL change. */
-    public static final String RULESET_VERSION = "0.3.0";
+    public static final String RULESET_VERSION = "0.4.0";
 
     /**
      * Every DRL file in the ruleset, as classpath resource paths. <b>Add new rule files here</b>;
@@ -44,8 +49,10 @@ public class RulesFacade {
      */
     static final List<String> DRL_FILES = List.of(
         "pifa/rules/allocation/strategy/classification.drl",
+        "pifa/rules/allocation/validation/allocation_validation.drl",
         "pifa/rules/ingestion/ingestion.drl",
         "pifa/rules/forecast/forecast.drl",
+        "pifa/rules/transfer/transfer.drl",
         "pifa/rules/workflow/workflow.drl");
 
     /** Compiled rules. Shared and read-only. */
@@ -82,16 +89,58 @@ public class RulesFacade {
     public Classification classify(String productName, int allocatableQty, int totalDemand) {
         // Guard: stock can never be negative, so clamp before the rules see it.
         ProductStock stock = new ProductStock(productName, Math.max(allocatableQty, 0), totalDemand);
-        StatelessKieSession session = container.newStatelessKieSession();
-        session.execute(stock); // fires all matching rules, which call stock.setClassification(...)
+        run(List.of(stock), null, null);
         return stock.getClassification();
     }
 
     /**
-     * Runs the ingestion business rules ({@code pifa.rules.ingestion}) over the facts of one parsed file.
+     * Classifies every product and chooses its allocation strategy ({@code pifa.rules.allocation.strategy}).
      *
-     * <p>A fresh stateless session is created, the findings list is registered as the DRL global
-     * {@code violations}, every fact plus the config is inserted, and all rules fire once.
+     * @param stocks one fact per product; their {@code classification} is set as a side effect
+     * @param config the policy switches (cap-at-demand)
+     * @return one directive per product
+     */
+    public List<AllocationDirective> decideStrategies(List<ProductStock> stocks, AllocationConfig config) {
+        List<AllocationDirective> directives = new ArrayList<>();
+        run(stocks, config, directives);
+        return directives;
+    }
+
+    /**
+     * Checks an allocation ({@code pifa.rules.allocation.validation}, BR-VA-01..04).
+     *
+     * @param stocks one fact per product, with classification already set
+     * @param lines  one fact per product x region
+     * @return ERROR and WARNING findings, each with the product id as subject
+     */
+    public List<Violation> validateAllocation(List<ProductStock> stocks, List<AllocationLine> lines) {
+        List<Object> facts = new ArrayList<>(stocks);
+        facts.addAll(lines);
+        return run(facts, null, null);
+    }
+
+    /**
+     * Validates one transfer ({@code pifa.rules.transfer}, BR-TR-01..04).
+     *
+     * @param check the transfer and the current allocation around it
+     * @return findings; any ERROR means the transfer is refused
+     */
+    public List<Violation> validateTransfer(TransferCheck check) {
+        return run(List.of(check), null, null);
+    }
+
+    /**
+     * Runs a workflow guard ({@code pifa.rules.workflow}, BR-WF-02/03).
+     *
+     * @param check what the workflow knows
+     * @return ERROR findings that block the action; empty if it is allowed
+     */
+    public List<Violation> checkWorkflow(WorkflowCheck check) {
+        return run(List.of(check), null, null);
+    }
+
+    /**
+     * Runs the ingestion business rules ({@code pifa.rules.ingestion}) over the facts of one parsed file.
      *
      * @param facts  the row facts built by the caller ({@code ProductRow}, {@code QtyCell},
      *               {@code MonthCell}, {@code DateCell}); may be empty
@@ -99,7 +148,7 @@ public class RulesFacade {
      * @return all ERROR and WARNING findings, in no guaranteed order; never null
      */
     public List<Violation> validateIngestion(List<?> facts, IngestionConfig config) {
-        return run(facts, config);
+        return run(facts, config, null);
     }
 
     /**
@@ -111,7 +160,7 @@ public class RulesFacade {
      * @return all ERROR and WARNING findings; never null
      */
     public List<Violation> validateForecast(List<?> facts, ForecastConfig config) {
-        return run(facts, config);
+        return run(facts, config, null);
     }
 
     /**
@@ -121,14 +170,23 @@ public class RulesFacade {
      * @return ERROR findings that block publishing; empty if publishing is allowed
      */
     public List<Violation> checkPublish(PublishCheck check) {
-        return run(List.of(check), null);
+        return run(List.of(check), null, null);
     }
 
-    /** Shared runner: fresh stateless session, findings list as the DRL global, facts (+ optional config) inserted. */
-    private List<Violation> run(List<?> facts, Object config) {
+    /**
+     * Shared runner: fresh stateless session, both DRL globals set (so no rule can hit a null global),
+     * facts (+ optional config fact) inserted, all rules fired once.
+     *
+     * @param facts      the facts
+     * @param config     an extra configuration fact, or null
+     * @param directives list receiving allocation directives, or null to discard them
+     * @return the findings collected in the {@code violations} global
+     */
+    private List<Violation> run(List<?> facts, Object config, List<AllocationDirective> directives) {
         List<Violation> found = new ArrayList<>();
         StatelessKieSession session = container.newStatelessKieSession();
         session.setGlobal("violations", found);
+        session.setGlobal("directives", directives != null ? directives : new ArrayList<>());
         List<Object> all = new ArrayList<>(facts);
         if (config != null) all.add(config); // the config is a fact too, so rules can read the limits
         session.execute(all);

@@ -91,6 +91,16 @@ export type Perms = {
   canProceed: boolean
   canReturnRegions: boolean
   changeThresholdPct: number
+  canRunAllocation: boolean
+  canEditAllocation: boolean
+  canEditReserve: boolean
+  canApproveAllocation: boolean
+  finalizableRegions: string[]
+  unfinalizableRegions: string[]
+  canCreateTransfer: boolean
+  canDecideAnyTransfer: boolean
+  canReopenAllocation: boolean
+  canReopenCycle: boolean
 }
 
 /** One cell of the forecast grid (mirrors ForecastQueryService.Cell). */
@@ -103,19 +113,20 @@ export type GridRow = { productId: string; product: string; regions: Record<stri
 export type GridPage = { total: number; rows: GridRow[] }
 
 /** One requested cell edit (mirrors ForecastEditService.EditRequest). */
-export type EditReq = { lineId: string; field: 'PUBLISHED' | 'REVISED'; value: number; reason: string | null; rowVersion: number }
+export type EditReq = { lineId: string; field: 'PUBLISHED' | 'REVISED' | 'APPROVED'; value: number; reason: string | null; rowVersion: number }
 
 /** A validation finding of the working copy. */
 export type ValidationFinding = { code: string; severity: 'ERROR' | 'WARNING'; column: string; message: string }
 
 /** A transition request (mirrors CycleWorkflowService.TransitionRequest). */
 export type Transition = {
-  action: 'PUBLISH' | 'RECALL' | 'SUBMIT_REGION' | 'PROCEED' | 'RETURN_REGIONS'
+  action: 'PUBLISH' | 'RECALL' | 'SUBMIT_REGION' | 'PROCEED' | 'RETURN_REGIONS' | 'APPROVE_ALLOCATION' | 'REOPEN_ALLOCATION' | 'FINALIZE_REGION' | 'UNFINALIZE_REGION' | 'REOPEN_CYCLE'
   region?: string
   regions?: string[]
   comment?: string
   rowVersion?: number
   reviewDeadline?: string
+  finalizeDeadline?: string
 }
 
 /** One product's sales analysis (mirrors SalesAnalysisService.Row). */
@@ -129,6 +140,82 @@ export type SalesPoint = { month: string; qty: number }
 
 /** An in-app notification. */
 export type Notice = { id: number; title: string; body: string | null; cycleId: string | null; createdAt: string; unread: boolean }
+
+/** A cell of the allocation grid (mirrors AllocationService.Cell). */
+export type AllocCell = { lineId: string; demand: number; proposed: number | null; approved: number | null; finalQty: number | null; rowVersion: number }
+
+/** Stock of a product in the cycle (mirrors AllocationService.Stock). */
+export type Stock = { available: number; reserve: number; reserveReason: string | null; allocatable: number; classification: string | null; explanation: string | null; unallocated: number | null; rowVersion: number }
+
+/** One product row of the allocation grid. */
+export type AllocRow = { productId: string; product: string; stock: Stock; regions: Record<string, AllocCell> }
+
+/** A page of the allocation grid plus the cycle summary. */
+export type AllocPage = {
+  total: number; rows: AllocRow[]
+  summary: { products: number; constrained: number; allocatable: number; demand: number; approved: number; proposalAt: string | null; rulesetVersion: string | null; parameterVersion: number | null; stale: boolean }
+}
+
+/** Result of a proposal run or preview (mirrors AllocationService.ProposalResult). */
+export type Proposal = {
+  saved: boolean; products: number; constrained: number; sufficient: number; changedCells: number
+  changes: { productId: string; product: string; region: string; before: number | null; after: number }[]
+  rulesetVersion: string; parameterVersion: number
+}
+
+/** An allocation finding (BR-VA-xx). */
+export type AllocFinding = { code: string; severity: 'ERROR' | 'WARNING'; productId: string; region: string | null; message: string }
+
+/** Rule parameter values (mirrors RuleParameterService.Values). */
+export type ParamValues = {
+  regionWeights: Record<string, number>; changeThresholdPct: number; minRegionFloor: number; spikeFactor: number; capAtDemand: boolean; autoActivateForecast: boolean
+  /** Phase 7: FIXED = regionWeights for every product; SALES_SHARE = each product's sales share over shareMonths (fixed weights when it has no sales). */
+  weightMode: 'FIXED' | 'SALES_SHARE'; shareMonths: number
+}
+
+/** One stored rule-parameter version. */
+export type ParamVersion = { version: number; values: ParamValues; effectiveFrom: string; changedBy: string; reason: string | null; createdAt: string }
+
+/** A transfer between regions (mirrors TransferService.TransferRow). */
+export type TransferRow = {
+  id: string; productId: string; product: string; fromRegion: string; toRegion: string; qty: number; kind: 'REQUEST' | 'OFFER' | 'DIRECT'
+  status: 'REQUESTED' | 'ACCEPTED' | 'REJECTED' | 'CANCELLED'; reason: string | null; requestedBy: string; requestedAt: string
+  decidedBy: string | null; decidedAt: string | null; decisionComment: string | null
+}
+
+/** A product in the master data (mirrors MasterDataAdminService.ProductRow). */
+export type MasterProduct = { id: string; name: string; code: string | null; active: boolean; source: string; aliases: { id: string; alias: string }[] }
+
+/** An audit entry. */
+export type AuditEntry = { id: number; at: string; actor: string; action: string; entityType: string; entityId: string | null; detail: string }
+
+/** Audit search filters. */
+export type AuditFilter = { actor?: string; action?: string; entityType?: string; entityId?: string; q?: string }
+
+/** A user from Keycloak (read-only view). */
+export type KcUser = { username: string; name: string; email: string; enabled: boolean; roles: string[]; regions: string[]; lastLogin: string | null }
+
+// ---- go-live (Phase 6)
+
+/** One go-live checklist line. item = number in the go-live checklist (0 = technical prerequisite). */
+export interface ReadinessCheck { key: string; item: number; title: string; status: 'PASS' | 'WARN' | 'FAIL' | 'MANUAL'; detail: string }
+/** The readiness report. */
+export interface Readiness { overall: 'PASS' | 'WARN' | 'FAIL'; checks: ReadinessCheck[]; at: string }
+/** A suggested master product for an unmatched name. */
+export interface NameSuggestion { productId: string; name: string; score: number }
+/** Product matching report for one file. */
+export interface MatchingReport {
+  fileName: string; distinctNames: number; exact: number; alias: number; ok: boolean
+  problems: { name: string; match: 'INACTIVE' | 'UNKNOWN'; occurrences: number; rows: number[]; suggestions: NameSuggestion[] }[]
+}
+/** Sales-history import outcome; problems not empty = nothing imported. */
+export interface SalesImport { imported: number; products: number; firstMonth: string | null; lastMonth: string | null; problems: string[] }
+/** Parallel-run reconciliation. */
+export interface Reconciliation {
+  cycleMonth: string; pifaStage: string; cellsCompared: number; matching: number; pifaTotal: number; legacyTotal: number
+  differences: { product: string; region: string; pifa: number; legacy: number; diff: number }[]
+  differenceCount: number; onlyInFile: string[]; onlyInPifa: string[]; ok: boolean
+}
 
 /**
  * Creates the API client for one access token.
@@ -181,6 +268,13 @@ export function createApi(token: string) {
     a.download = name
     a.click()
     URL.revokeObjectURL(url)
+  }
+
+  /** @returns a multipart form with the file in field "file" */
+  function formWith(file: File) {
+    const form = new FormData()
+    form.append('file', file)
+    return form
   }
 
   return {
@@ -239,7 +333,117 @@ export function createApi(token: string) {
     notifications: () => json<Notice[]>('/notifications?limit=20'),
     /** Marks one notification as read. */
     markRead: (id: number) => json<void>(`/notifications/${id}/read`, { method: 'POST' }),
+
+    // ---- planning and allocation (Phase 3)
+    /** One page of the demand-vs-stock / allocation grid. */
+    allocation: (id: string, q: string, constrained: boolean, page: number, size = 50) =>
+      json<AllocPage>(`/cycles/${id}/allocation?q=${encodeURIComponent(q)}&constrained=${constrained}&page=${page}&size=${size}`),
+    /** What a re-run would change, without saving. */
+    previewAllocation: (id: string) => json<Proposal>(`/cycles/${id}/allocation/preview`, { method: 'POST' }),
+    /** Runs the Drools allocation and stores it (replaces the Planner's edits). */
+    runAllocation: (id: string) => json<Proposal>(`/cycles/${id}/allocation/proposal`, { method: 'POST' }),
+    /** Allocation findings of a stage. */
+    allocationViolations: (id: string, stage: 'APPROVED' | 'FINAL') => json<AllocFinding[]>(`/cycles/${id}/allocation/violations?stage=${stage}`),
+    /** Sets a product's reserve. */
+    setReserve: (id: string, productId: string, reserveQty: number, reason: string, rowVersion: number) =>
+      json<{ rowVersion: number }>(`/cycles/${id}/stock/${productId}`, send('PATCH', { reserveQty, reason, rowVersion })),
+    /** Downloads an allocation export (all regions or one region). */
+    exportAllocation: (id: string, stage: 'proposed' | 'approved' | 'final', region?: string) =>
+      download(`/cycles/${id}/allocation/export?stage=${stage}${region ? `&region=${region}` : ''}`, `allocation_${stage}.xlsx`),
+    /** Rule parameters: current, history and ruleset version (Planner, Admin). */
+    ruleParameters: () => json<{ current: ParamVersion; history: ParamVersion[]; rulesetVersion: string }>('/rule-parameters'),
+    /** Saves a new rule-parameter version (Admin). */
+    saveRuleParameters: (values: ParamValues, reason: string, effectiveFrom?: string) =>
+      json<ParamVersion>('/rule-parameters', send('POST', { values, reason, effectiveFrom: effectiveFrom || null })),
+
+    // ---- transfers (Phase 4)
+    /** Transfers of a cycle, newest first. */
+    transfers: (id: string, status?: string) => json<TransferRow[]>(`/cycles/${id}/transfers${status ? `?status=${status}` : ''}`),
+    /** Requests, offers or (owning both regions) directly applies a transfer. */
+    createTransfer: (id: string, body: { productId: string; fromRegion: string; toRegion: string; qty: number; reason?: string }) =>
+      json<{ transfer: TransferRow; warnings: string[] }>(`/cycles/${id}/transfers`, send('POST', body)),
+    /** Accepts a pending transfer (the units move). */
+    acceptTransfer: (tid: string, comment?: string) => json<{ transfer: TransferRow; warnings: string[] }>(`/transfers/${tid}/accept`, send('POST', { comment: comment ?? null })),
+    /** Rejects a pending transfer. */
+    rejectTransfer: (tid: string, comment?: string) => json<{ transfer: TransferRow }>(`/transfers/${tid}/reject`, send('POST', { comment: comment ?? null })),
+    /** Withdraws one's own pending transfer. */
+    cancelTransfer: (tid: string) => json<{ transfer: TransferRow }>(`/transfers/${tid}/cancel`, { method: 'POST' }),
+
+    // ---- admin (Phase 4)
+    /** Overview of a cycle: progress, open issues, system health. */
+    overview: (cycleId: string) => json<Overview>(`/admin/overview?cycleId=${cycleId}`),
+    /** Analytics across cycles. */
+    analytics: (from?: string, to?: string) => json<CycleAnalytics[]>(`/admin/analytics?${from ? `from=${from}&` : ''}${to ? `to=${to}` : ''}`),
+    /** Products with aliases. */
+    products: (q: string, includeInactive: boolean) => json<MasterProduct[]>(`/admin/products?q=${encodeURIComponent(q)}&includeInactive=${includeInactive}`),
+    /** Adds a product. */
+    addProduct: (name: string) => json<{ id: string }>('/admin/products', send('POST', { name })),
+    /** Renames, (de)activates or sets the Product_code of a product (code "" removes it). */
+    updateProduct: (pid: string, body: { name?: string; active?: boolean; code?: string }) => json<void>(`/admin/products/${pid}`, send('PATCH', body)),
+    /** Adds an alias. */
+    addAlias: (pid: string, name: string) => json<{ id: string }>(`/admin/products/${pid}/aliases`, send('POST', { name })),
+    /** Removes an alias. */
+    removeAlias: (pid: string, aid: string) => json<void>(`/admin/products/${pid}/aliases/${aid}`, { method: 'DELETE' }),
+    /** Bulk product import from Excel. */
+    importProducts: (file: File) => {
+      const form = new FormData()
+      form.append('file', file)
+      return json<{ created: number; updated: number; aliasesAdded: number; problems: string[] }>('/admin/products/import', { method: 'POST', body: form })
+    },
+    /** Audit search. */
+    audit: (f: AuditFilter, page: number) => json<{ total: number; rows: AuditEntry[] }>(`/admin/audit?${auditQuery(f)}&page=${page}&size=50`),
+    /** Audit export. */
+    exportAudit: (f: AuditFilter, format: 'csv' | 'xlsx') => download(`/admin/audit/export?${auditQuery(f)}&format=${format}`, `audit.${format}`),
+    /** Verifies the audit hash chain now. */
+    verifyAudit: () => json<{ ok: boolean; rows: number; recomputed: number; brokenAtId: number | null; message: string }>('/admin/audit/verify', { method: 'POST' }),
+    /** Creates a planning cycle. */
+    createCycle: (month: string, reviewDeadline?: string, finalizeDeadline?: string) =>
+      json<{ id: string }>('/admin/cycles', send('POST', { month, reviewDeadline: reviewDeadline || null, finalizeDeadline: finalizeDeadline || null })),
+    /** Sets a cycle's deadlines. */
+    setDeadlines: (cycleId: string, reviewDeadline?: string, finalizeDeadline?: string) =>
+      json<void>(`/admin/cycles/${cycleId}/deadlines`, send('PATCH', { reviewDeadline: reviewDeadline || null, finalizeDeadline: finalizeDeadline || null })),
+    /** Users from Keycloak (read-only). */
+    users: () => json<{ users: KcUser[]; consoleUrl: string | null }>('/admin/users'),
+
+    // ---- go-live tools (Phase 6)
+    /** Go-live readiness: every checklist item with PASS / WARN / FAIL / MANUAL. */
+    readiness: () => json<Readiness>('/admin/go-live/readiness'),
+    /** Matching report: which product names in a real file match the master. */
+    matchingReport: (file: File) => json<MatchingReport>('/admin/go-live/matching-report', { method: 'POST', body: formWith(file) }),
+    /** Imports real sales history; problems come back as a result (422), not an error. */
+    importSales: (file: File) => json<SalesImport>('/admin/go-live/sales-history', { method: 'POST', body: formWith(file) }, true),
+    /** Compares the old process's final allocation with PIFA's for a cycle. */
+    reconcile: (cycleId: string, file: File) => json<Reconciliation>(`/admin/go-live/cycles/${cycleId}/reconciliation`, { method: 'POST', body: formWith(file) }),
+    /** Empty sales or allocation template. */
+    goLiveTemplate: (kind: 'sales' | 'allocation') => download(`/admin/go-live/templates/${kind}`, `PIFA_${kind}_template.xlsx`),
   }
+}
+
+/** Builds the query string of an audit search. */
+function auditQuery(f: AuditFilter) {
+  const p = new URLSearchParams()
+  for (const [k, v] of Object.entries(f)) if (v) p.set(k, v)
+  return p.toString()
+}
+
+/** Admin overview of one cycle (mirrors AdminInsightService.overview). */
+export type Overview = {
+  cycle: CycleDetail
+  issues: {
+    rejectedFilesLast7Days: number; pendingTransfers: number; regionsNotSubmitted: string[]; regionsNotFinalized: string[]
+    allocationStale: boolean; inventoryChangedAfterApproval: boolean; reviewOverdue: boolean; finalizeOverdue: boolean
+  }
+  system: Record<string, { value: string; ok: boolean | 'unknown'; updatedAt: string } | number>
+}
+
+/** Analytics of one cycle (mirrors AdminInsightService.analytics). */
+export type CycleAnalytics = {
+  cycleId: string; month: string; state: string
+  regions: Record<string, { published: number; revised: number; approved: number | null; final: number | null; fillRatePct: number | null }>
+  constrainedProducts: number; constrainedSharePct: number | null
+  transferFlows: { from: string; to: string; units: number; transfers: number }[]
+  stageHours: { draft: number | null; regionalReview: number | null; planning: number | null; finalization: number | null; total: number | null }
+  accuracy: { available: boolean; actualUnits?: number; wapePublishedPct?: number; wapeRevisedPct?: number; wapeAllocationPct?: number; source?: string }
 }
 
 /** The client type, for component props. */

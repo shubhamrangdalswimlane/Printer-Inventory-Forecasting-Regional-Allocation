@@ -1,0 +1,205 @@
+# web.yaml - the "web" workload: unprivileged nginx serving the built React SPA. The nginx configuration comes
+# from the ConfigMap below (not the image), so the strict browser security headers (CSP, HSTS, ...) are reviewed
+# and versioned here, in one place, for every environment. Also: Service and PodDisruptionBudget.
+{{- $csp := printf "default-src 'self'; connect-src 'self' %s; frame-ancestors 'none'; object-src 'none'; base-uri 'self'" .Values.web.keycloakOrigin }}
+{{- if .Values.web.cspExtra }}
+{{- $csp = printf "%s; %s" $csp .Values.web.cspExtra }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pifa.fullname" . }}-web
+  labels:
+    {{- include "pifa.componentLabels" (dict "root" . "component" "web") | nindent 4 }}
+data:
+  # Included in EVERY location: nginx drops server-level add_header lines in any location that has its own
+  # add_header (here: Cache-Control), so a shared include is the only reliable way to always send them.
+  security-headers.conf: |
+    # CSP: scripts, styles, images and fonts only from this origin; API calls to this origin (/api) and to
+    # Keycloak (OIDC token endpoint); no framing (clickjacking), no plugins, no <base> hijacking.
+    add_header Content-Security-Policy "{{ $csp }}" always;
+    # Browsers must use HTTPS for this host for a year (TLS terminates at the ingress).
+    add_header Strict-Transport-Security "max-age={{ int64 .Values.web.hstsMaxAge }}; includeSubDomains" always;
+    # No MIME sniffing: a file is only ever treated as its declared type.
+    add_header X-Content-Type-Options "nosniff" always;
+    # Never leak URLs (cycle ids, regions) to other sites.
+    add_header Referrer-Policy "no-referrer" always;
+    # Legacy equivalent of frame-ancestors 'none' for old browsers.
+    add_header X-Frame-Options "DENY" always;
+    # Isolate the window from cross-origin popups.
+    add_header Cross-Origin-Opener-Policy "same-origin" always;
+    # The app needs no device APIs.
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;
+  nginx.conf: |
+    # Complete nginx configuration (replaces the image's). Every writable path is under /tmp because the root
+    # filesystem is read-only.
+    worker_processes auto;
+    pid /tmp/nginx.pid;
+    error_log /dev/stderr warn;
+
+    events {
+      worker_connections 1024;
+    }
+
+    http {
+      include /etc/nginx/mime.types;
+      default_type application/octet-stream;
+      client_body_temp_path /tmp/client_temp;
+      proxy_temp_path /tmp/proxy_temp;
+      fastcgi_temp_path /tmp/fastcgi_temp;
+      uwsgi_temp_path /tmp/uwsgi_temp;
+      scgi_temp_path /tmp/scgi_temp;
+
+      # JSON access log on stdout; request_id is the X-Request-Id set by the ingress, for log correlation.
+      log_format json escape=json '{"time":"$time_iso8601","request_id":"$http_x_request_id",'
+                                  '"method":"$request_method","uri":"$uri","status":$status,'
+                                  '"bytes":$body_bytes_sent,"duration":$request_time,"ua":"$http_user_agent"}';
+      access_log /dev/stdout json;
+
+      sendfile on;
+      tcp_nopush on;
+      keepalive_timeout 65;
+      # Do not reveal the nginx version.
+      server_tokens off;
+      # Static files only; nothing is uploaded to this server.
+      client_max_body_size 1k;
+
+      gzip on;
+      gzip_types text/css application/javascript application/json image/svg+xml;
+      gzip_min_length 1024;
+
+      server {
+        listen 8080;
+        server_name _;
+        root /usr/share/nginx/html;
+        index index.html;
+
+        # Kubernetes probes.
+        location = /healthz {
+          access_log off;
+          default_type text/plain;
+          return 200 "ok\n";
+        }
+
+        # Vite emits content-hashed file names under /assets, so they can be cached forever.
+        location /assets/ {
+          include /etc/nginx/pifa/security-headers.conf;
+          add_header Cache-Control "public, max-age=31536000, immutable" always;
+          try_files $uri =404;
+        }
+
+        # SPA fallback: any unknown path (client-side route like /regional/EU) returns index.html. index.html
+        # itself is never cached, so a deploy is picked up on the next page load.
+        location / {
+          include /etc/nginx/pifa/security-headers.conf;
+          add_header Cache-Control "no-cache" always;
+          try_files $uri $uri/ /index.html;
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pifa.fullname" . }}-web
+  labels:
+    {{- include "pifa.componentLabels" (dict "root" . "component" "web") | nindent 4 }}
+spec:
+  replicas: {{ .Values.web.replicas }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  selector:
+    matchLabels:
+      {{- include "pifa.selectorLabels" (dict "root" . "component" "web") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pifa.componentLabels" (dict "root" . "component" "web") | nindent 8 }}
+      annotations:
+        # Restart nginx when its configuration changes.
+        checksum/config: {{ printf "%s%s" $csp (toYaml .Values.web) | sha256sum }}
+        {{- with .Values.web.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "pifa.fullname" . }}-web
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: nginx
+          image: "{{ .Values.web.image.repository }}:{{ .Values.web.image.tag }}"
+          imagePullPolicy: {{ .Values.web.image.pullPolicy }}
+          # Run nginx directly with our config, skipping the image's entrypoint scripts (they try to rewrite
+          # files under /etc/nginx, which is read-only here).
+          command: ["nginx", "-c", "/etc/nginx/pifa/nginx.conf", "-g", "daemon off;"]
+          ports:
+            - { name: http, containerPort: 8080, protocol: TCP }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          lifecycle:
+            # Let the ingress stop routing here before nginx exits.
+            preStop:
+              exec: { command: ["sleep", "5"] }
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/nginx/pifa, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "pifa.fullname" . }}-web
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
+      {{- with .Values.web.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.web.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      affinity:
+        {{- include "pifa.affinity" (dict "root" . "component" "web" "affinity" .Values.web.affinity) | nindent 8 }}
+      topologySpreadConstraints:
+        {{- include "pifa.topologySpread" (dict "root" . "component" "web") | nindent 8 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pifa.fullname" . }}-web
+  labels:
+    {{- include "pifa.componentLabels" (dict "root" . "component" "web") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "pifa.selectorLabels" (dict "root" . "component" "web") | nindent 4 }}
+  ports:
+    - { name: http, port: 8080, targetPort: http, protocol: TCP }
+{{- if .Values.web.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "pifa.fullname" . }}-web
+  labels:
+    {{- include "pifa.componentLabels" (dict "root" . "component" "web") | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.web.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "pifa.selectorLabels" (dict "root" . "component" "web") | nindent 6 }}
+{{- end }}

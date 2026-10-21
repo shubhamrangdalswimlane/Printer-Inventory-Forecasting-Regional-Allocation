@@ -27,7 +27,9 @@ public final class EditPolicy {
         /** Forecaster working value, editable in FORECAST_DRAFT. */
         PUBLISHED,
         /** Regional Manager value for the manager's own region, editable in REGIONAL_REVIEW while the region is OPEN. */
-        REVISED
+        REVISED,
+        /** Planner's approved allocation, editable in PLANNING (deviation from the proposal needs a reason). */
+        APPROVED
     }
 
     /**
@@ -52,6 +54,10 @@ public final class EditPolicy {
                 if (!"REGIONAL_REVIEW".equals(cycleState)) throw new ApiException(HttpStatus.CONFLICT, "CYCLE_LOCKED", "Revisions can only be made while the cycle is REGIONAL_REVIEW (now " + cycleState + ")");
                 if (!"OPEN".equals(regionReview)) throw new ApiException(HttpStatus.CONFLICT, "REGION_SUBMITTED", "Region " + region + " has already been submitted");
             }
+            case APPROVED -> {
+                if (!user.has("planner")) throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "Only the Planner may edit the approved allocation");
+                if (!"PLANNING".equals(cycleState)) throw new ApiException(HttpStatus.CONFLICT, "CYCLE_LOCKED", "The allocation can only be edited while the cycle is PLANNING (now " + cycleState + ")");
+            }
         }
     }
 
@@ -64,6 +70,15 @@ public final class EditPolicy {
      * @return a map the front end turns into enabled/disabled controls
      */
     public static Map<String, Object> permissions(CurrentUser user, String cycleState, Map<String, String> regionReviews) {
+        return permissions(user, cycleState, regionReviews, Map.of());
+    }
+
+    /**
+     * Same as {@link #permissions(CurrentUser, String, Map)} plus the finalization-stage capabilities.
+     *
+     * @param regionFinalize finalize status per region code (OPEN/FINALIZED)
+     */
+    public static Map<String, Object> permissions(CurrentUser user, String cycleState, Map<String, String> regionReviews, Map<String, String> regionFinalize) {
         boolean forecaster = user.has("forecaster");
         boolean noneSubmitted = regionReviews.values().stream().noneMatch("SUBMITTED"::equals);
         List<String> editableRegions = new ArrayList<>();
@@ -76,14 +91,37 @@ public final class EditPolicy {
                 }
             }
         }
-        return Map.of(
-            "state", cycleState,
-            "canEditPublished", forecaster && "FORECAST_DRAFT".equals(cycleState),
-            "editableRegions", editableRegions,
-            "canPublish", forecaster && "FORECAST_DRAFT".equals(cycleState),
-            "canRecall", "REGIONAL_REVIEW".equals(cycleState) && ((forecaster && noneSubmitted) || user.has("admin")),
-            "submittableRegions", submittable,
-            "canProceed", user.has("planner") && "REGIONAL_REVIEW".equals(cycleState),
-            "canReturnRegions", user.has("planner") && "PLANNING".equals(cycleState));
+        boolean planning = user.has("planner") && "PLANNING".equals(cycleState);
+        Map<String, Object> p = new java.util.LinkedHashMap<>();
+        p.put("state", cycleState);
+        p.put("canEditPublished", forecaster && "FORECAST_DRAFT".equals(cycleState));
+        p.put("editableRegions", editableRegions);
+        p.put("canPublish", forecaster && "FORECAST_DRAFT".equals(cycleState));
+        p.put("canRecall", "REGIONAL_REVIEW".equals(cycleState) && ((forecaster && noneSubmitted) || user.has("admin")));
+        p.put("submittableRegions", submittable);
+        p.put("canProceed", user.has("planner") && "REGIONAL_REVIEW".equals(cycleState));
+        p.put("canReturnRegions", planning);
+        // Phase 3: Planner allocation
+        p.put("canRunAllocation", planning);
+        p.put("canEditAllocation", planning);
+        p.put("canEditReserve", planning);
+        p.put("canApproveAllocation", planning);
+        // Phase 4: finalization and transfers
+        boolean finalization = "REGIONAL_FINALIZATION".equals(cycleState);
+        List<String> finalizable = new ArrayList<>();
+        List<String> unfinalizable = new ArrayList<>();
+        if (user.has("regional_manager") && finalization) {
+            for (var e : regionFinalize.entrySet()) {
+                if (!user.inRegion(e.getKey())) continue;
+                if ("FINALIZED".equals(e.getValue())) unfinalizable.add(e.getKey()); else finalizable.add(e.getKey());
+            }
+        }
+        p.put("finalizableRegions", finalizable);
+        p.put("unfinalizableRegions", unfinalizable);
+        p.put("canCreateTransfer", user.has("regional_manager") && finalization);
+        p.put("canDecideAnyTransfer", user.has("planner") && finalization);
+        p.put("canReopenAllocation", user.has("planner") && finalization);
+        p.put("canReopenCycle", user.has("admin") && "FINAL".equals(cycleState));
+        return p;
     }
 }

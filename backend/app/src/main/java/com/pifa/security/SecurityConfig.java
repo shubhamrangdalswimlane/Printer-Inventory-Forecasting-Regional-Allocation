@@ -49,12 +49,25 @@ public class SecurityConfig {
      * @throws Exception if the configuration is invalid (propagated from the builder)
      */
     @Bean
-    SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    SecurityFilterChain filterChain(HttpSecurity http, @org.springframework.beans.factory.annotation.Value("${management.server.port:9091}") int managementPort) throws Exception {
+        // Actuator endpoints (probes, metrics) are open ONLY on the internal management port, which the ingress
+        // never exposes. On the public port they would need a token like everything else.
+        org.springframework.security.web.util.matcher.RequestMatcher onManagementPort = r -> r.getLocalPort() == managementPort;
         http
             .csrf(csrf -> csrf.disable()) // bearer-token API, no cookies
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            // Security headers on every API response (the SPA's own CSP is set by nginx).
+            .headers(h -> h
+                .contentSecurityPolicy(c -> c.policyDirectives("default-src 'none'; frame-ancestors 'none'"))
+                .frameOptions(f -> f.deny())
+                .referrerPolicy(r -> r.policy(org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy.NO_REFERRER))
+                .httpStrictTransportSecurity(s -> s.includeSubDomains(true).maxAgeInSeconds(31_536_000)))
             .authorizeHttpRequests(a -> a
-                .requestMatchers("/actuator/health/**", "/actuator/info").permitAll()
+                // The live-event stream (SseEmitter) completes on an ASYNC dispatch of the already-authorised
+                // request; that internal re-dispatch must not be checked again (it has no new credentials).
+                .dispatcherTypeMatchers(jakarta.servlet.DispatcherType.ASYNC).permitAll()
+                .requestMatchers(onManagementPort).permitAll()
+                .requestMatchers("/actuator/health/liveness", "/actuator/health/readiness").permitAll()
                 .requestMatchers(HttpMethod.GET, "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
                 .anyRequest().authenticated())
             .oauth2ResourceServer(o -> o.jwt(j -> j.jwtAuthenticationConverter(jwtAuthenticationConverter())))

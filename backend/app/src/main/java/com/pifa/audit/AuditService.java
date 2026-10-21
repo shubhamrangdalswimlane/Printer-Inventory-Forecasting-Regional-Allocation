@@ -17,14 +17,18 @@ import org.springframework.transaction.annotation.Transactional;
  * Writes the append-only, hash-chained audit log (architecture.md section 8.3).
  *
  * <p>Every row stores {@code hash = sha256(prev_hash | at | actor | action | type | id | detail)}.
- * Changing or deleting an old row breaks every later hash, which a verification job can detect.
- * Writes run in the caller's transaction, so an audit entry exists if and only if the change committed.
+ * Changing or deleting an old row breaks every later hash, which {@link AuditChainVerifier} detects;
+ * the database also refuses UPDATE and DELETE on the table outright. Writes run in the caller's
+ * transaction, so an audit entry exists if and only if the change committed.
+ *
+ * <p>Hash version 2: the detail is first normalised by PostgreSQL ({@code CAST(... AS jsonb)::text}),
+ * exactly as it will be read back later, so the hash can be recomputed from the stored row.
  */
 @Service
 public class AuditService {
 
     /** 64 zeros: the "previous hash" of the very first row. */
-    private static final String GENESIS = "0".repeat(64);
+    static final String GENESIS = "0".repeat(64);
     /** Arbitrary constant key for the Postgres advisory lock that serialises audit writes. */
     private static final long LOCK_KEY = 7001L;
 
@@ -55,19 +59,44 @@ public class AuditService {
             .query(String.class).optional().orElse(GENESIS);
         // Truncate to microseconds: that is what Postgres stores, so the hash input matches on re-read.
         OffsetDateTime at = OffsetDateTime.now(ZoneOffset.UTC).truncatedTo(ChronoUnit.MICROS);
-        String detailJson = toJson(detail);
-        String hash = sha256(prev + "|" + at + "|" + actor + "|" + action + "|" + entityType + "|" + entityId + "|" + detailJson);
+        // Normalise the JSON the way PostgreSQL stores it, so the hash can be recomputed later.
+        String detailJson = jdbc.sql("SELECT CAST(:d AS jsonb)::text").param("d", toJson(detail)).query(String.class).single();
+        String hash = hash(prev, at, actor, action, entityType, entityId, detailJson);
         jdbc.sql("""
-                INSERT INTO audit_log (at, actor, action, entity_type, entity_id, detail, prev_hash, hash)
-                VALUES (:at, :actor, :action, :type, :id, CAST(:detail AS jsonb), :prev, :hash)
+                INSERT INTO audit_log (at, actor, action, entity_type, entity_id, detail, prev_hash, hash, hash_version)
+                VALUES (:at, :actor, :action, :type, :id, CAST(:detail AS jsonb), :prev, :hash, 2)
                 """)
             .param("at", at).param("actor", actor).param("action", action).param("type", entityType)
             .param("id", entityId).param("detail", detailJson).param("prev", prev).param("hash", hash).update();
     }
 
+    /**
+     * The hash formula (version 2), shared with the verifier.
+     *
+     * @return lower-case hex SHA-256 of {@code prev|at|actor|action|type|id|detail}
+     */
+    static String hash(String prev, OffsetDateTime at, String actor, String action, String entityType, String entityId, String detailJson) {
+        return sha256(prev + "|" + at.withOffsetSameInstant(ZoneOffset.UTC) + "|" + actor + "|" + action + "|" + entityType + "|" + entityId + "|" + detailJson);
+    }
+
+    /**
+     * Serialises the detail, adding the request context when the change came through HTTP
+     * (architecture.md 8.3: request id, client IP, user agent), so an audit row can be matched to logs.
+     */
     private String toJson(Map<String, Object> detail) {
+        Map<String, Object> d = new java.util.LinkedHashMap<>(detail == null ? Map.of() : detail);
+        String requestId = org.slf4j.MDC.get("requestId");
+        if (requestId != null) d.putIfAbsent("requestId", requestId);
+        var attrs = org.springframework.web.context.request.RequestContextHolder.getRequestAttributes();
+        if (attrs instanceof org.springframework.web.context.request.ServletRequestAttributes sra) {
+            var req = sra.getRequest();
+            String forwarded = req.getHeader("X-Forwarded-For");
+            d.putIfAbsent("ip", forwarded != null ? forwarded.split(",")[0].trim() : req.getRemoteAddr());
+            String ua = req.getHeader("User-Agent");
+            if (ua != null) d.putIfAbsent("userAgent", ua.length() > 200 ? ua.substring(0, 200) : ua);
+        }
         try {
-            return json.writeValueAsString(detail == null ? Map.of() : detail);
+            return json.writeValueAsString(d);
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Audit detail is not serialisable", e);
         }

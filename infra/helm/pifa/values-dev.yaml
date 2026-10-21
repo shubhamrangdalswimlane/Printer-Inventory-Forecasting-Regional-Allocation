@@ -1,0 +1,127 @@
+# values-dev.yaml - example overrides for the shared "dev" environment (architecture.md 13.2: main branch,
+# synthetic data, pifa-dev realm). Install with:
+#   helm upgrade --install pifa infra/helm/pifa -n pifa-dev -f infra/helm/pifa/values-dev.yaml --set image.tag=<sha>
+# Smaller footprint than prod: single replicas where losing a pod for a minute is acceptable.
+
+image:
+  # -- Built by CI on every merge to main; deploy the commit SHA tag.
+  repository: ghcr.io/OWNER/pifa-api
+
+config:
+  # -- Default Spring profile in dev.
+  springProfilesActive: ""
+  # -- Dev realm on the shared Keycloak.
+  oidcIssuer: https://sso.dev.example.com/realms/pifa-dev
+  # -- In-cluster key URL, so the API does not hairpin through the public load balancer.
+  jwkSetUri: http://keycloak.identity.svc:8080/realms/pifa-dev/protocol/openid-connect/certs
+  db:
+    # -- Dev database (managed PostgreSQL, TLS).
+    url: jdbc:postgresql://pifa-db.dev.example.com:5432/pifa?sslmode=require
+  storage:
+    type: s3
+    s3:
+      # -- MinIO in the cluster stands in for S3 in dev.
+      bucket: pifa-files-dev
+      # -- Region string (MinIO ignores it but the SDK requires one).
+      region: eu-west-1
+      # -- MinIO endpoint.
+      endpoint: http://minio.minio.svc:9000
+      # -- MinIO has no KMS; objects use AES256 server-side encryption.
+      kms: false
+  clamav:
+    # -- Scan in dev too, so problems show up before prod.
+    enabled: true
+  sftp:
+    # -- Dev SFTP server.
+    host: sftp.dev.example.com
+    port: 22
+    user: pifa-worker
+  mail:
+    # -- Mail to a catch-all (Mailpit) in dev.
+    enabled: true
+    smtpHost: mailpit.pifa-dev.svc
+    smtpPort: 1025
+  # -- Synthetic generator ON in dev (architecture.md 13.2).
+  syntheticEnabled: true
+  keycloak:
+    # -- Admin "users & roles" view reads the dev realm.
+    adminUrl: http://keycloak.identity.svc:8080
+    realm: pifa-dev
+
+api:
+  autoscaling:
+    # -- 1-2 pods are enough for the team.
+    minReplicas: 1
+    maxReplicas: 2
+  pdb:
+    # -- No PDB: with one replica it would block node drains forever.
+    enabled: false
+  # -- Smaller requests in dev.
+  resources:
+    requests: { cpu: 200m, memory: 768Mi }
+    limits: { cpu: "1", memory: 1536Mi }
+
+worker:
+  # -- One worker is fine in dev.
+  replicas: 1
+  pdb:
+    # -- Disabled for the single replica (see api.pdb).
+    enabled: false
+  # -- Smaller requests in dev.
+  resources:
+    requests: { cpu: 200m, memory: 768Mi }
+    limits: { cpu: "1", memory: 1536Mi }
+
+web:
+  # -- One nginx is enough in dev.
+  replicas: 1
+  pdb:
+    # -- Disabled for the single replica.
+    enabled: false
+  image:
+    # -- SPA image built with VITE_OIDC_AUTHORITY=https://sso.dev.example.com/realms/pifa-dev.
+    repository: ghcr.io/OWNER/pifa-web
+    tag: dev
+  # -- Dev Keycloak origin for the CSP.
+  keycloakOrigin: https://sso.dev.example.com
+
+clamav:
+  # -- One scanner in dev.
+  replicas: 1
+  pdb:
+    # -- Disabled for the single replica.
+    enabled: false
+  tls:
+    certManager:
+      # -- Let cert-manager issue the internal ClamAV certificate from the cluster CA.
+      enabled: true
+
+secrets:
+  clamavCa:
+    # -- With cert-manager, trust the CA that cert-manager stores next to the certificate.
+    name: pifa-clamav-tls
+    key: ca.crt
+
+ingress:
+  # -- Dev host name.
+  host: pifa.dev.example.com
+  # -- TLS certificate for the dev host.
+  tlsSecretName: pifa-dev-tls
+  annotations:
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    # Public certificate from cert-manager.
+    cert-manager.io/cluster-issuer: letsencrypt
+
+externalSecrets:
+  # -- Dev secrets also come from the secret manager (nothing is created by hand).
+  enabled: true
+  remoteRefs:
+    db: { key: pifa/dev/db, usernameProperty: username, passwordProperty: password }
+    keycloakReader: { key: pifa/dev/keycloak-reader, property: client-secret }
+    sftp: { key: pifa/dev/sftp, privateKeyProperty: private-key, knownHostsProperty: known-hosts }
+    clamavCa: { key: pifa/dev/clamav-ca, property: ca.crt }
+    clamavTls: { key: pifa/dev/clamav-tls, certProperty: tls.crt, keyProperty: tls.key }
+
+monitoring:
+  # -- Scrape dev too, so dashboards and alerts are tested before prod (alerts route to a non-paging receiver).
+  enabled: true

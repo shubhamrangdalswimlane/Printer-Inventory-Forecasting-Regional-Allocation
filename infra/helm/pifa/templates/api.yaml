@@ -1,0 +1,86 @@
+# api.yaml - the "api" workload: Deployment, Service, HorizontalPodAutoscaler and PodDisruptionBudget. It serves
+# the REST API (port 8080) to browsers through the Ingress. Background jobs and SFTP polling are switched off
+# here (PIFA_JOBS_ENABLED=false, PIFA_SFTP_ENABLED=false) so request latency never competes with batch work.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pifa.fullname" . }}-api
+  labels:
+    {{- include "pifa.componentLabels" (dict "root" . "component" "api") | nindent 4 }}
+spec:
+  {{- if not .Values.api.autoscaling.enabled }}
+  replicas: {{ .Values.api.replicas }}
+  {{- end }}
+  # Old ReplicaSets kept for `helm rollback` / `kubectl rollout undo`.
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    # Start a new pod before stopping an old one, so capacity never drops during a deploy.
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  selector:
+    matchLabels:
+      {{- include "pifa.selectorLabels" (dict "root" . "component" "api") | nindent 6 }}
+  template:
+    {{- include "pifa.backendPodTemplate" (dict "root" . "component" "api" "cfg" .Values.api "worker" false) | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pifa.fullname" . }}-api
+  labels:
+    {{- include "pifa.componentLabels" (dict "root" . "component" "api") | nindent 4 }}
+    # Selected by the ServiceMonitor.
+    pifa.example.com/metrics: "true"
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "pifa.selectorLabels" (dict "root" . "component" "api") | nindent 4 }}
+  ports:
+    # Used by the Ingress.
+    - { name: http, port: 8080, targetPort: http, protocol: TCP }
+    # Used only by Prometheus (ServiceMonitor). The Ingress never references this port, and the NetworkPolicy
+    # admits only Prometheus to it.
+    - { name: management, port: 9091, targetPort: management, protocol: TCP }
+{{- if .Values.api.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "pifa.fullname" . }}-api
+  labels:
+    {{- include "pifa.componentLabels" (dict "root" . "component" "api") | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "pifa.fullname" . }}-api
+  minReplicas: {{ .Values.api.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.api.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.api.autoscaling.targetCPUUtilizationPercentage }}
+  behavior:
+    # Scale down slowly: JVM pods are expensive to start (~45 s) and month-end traffic comes in waves.
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - { type: Pods, value: 1, periodSeconds: 120 }
+{{- end }}
+{{- if .Values.api.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "pifa.fullname" . }}-api
+  labels:
+    {{- include "pifa.componentLabels" (dict "root" . "component" "api") | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.api.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "pifa.selectorLabels" (dict "root" . "component" "api") | nindent 6 }}
+{{- end }}

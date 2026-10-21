@@ -21,6 +21,18 @@ export default function RegionalActions({ api, cycleId, detail, perms, regions, 
   const state = detail.cycle.state
   const mine = detail.regions.filter((r) => regions.includes(r.region))
 
+  /** Runs a region transition (finalize / un-finalize) and reports the outcome. */
+  async function run(action: 'FINALIZE_REGION' | 'UNFINALIZE_REGION', region: string, okText: string) {
+    setMessage(null)
+    try {
+      await api.transition(cycleId, { action, region })
+      setMessage({ kind: 'ok', text: okText })
+      onDone()
+    } catch (e) {
+      setMessage({ kind: 'error', text: (e as Error).message })
+    }
+  }
+
   /** Submits one region; the server locks that region's edits and creates the snapshot. */
   async function submit(region: string) {
     setMessage(null)
@@ -46,7 +58,18 @@ export default function RegionalActions({ api, cycleId, detail, perms, regions, 
             : <span className="ok">submitted{r.actor ? ` by ${r.actor}` : ''} ✓</span>}
         </p>
       ))}
-      {['PLANNING', 'REGIONAL_FINALIZATION', 'FINAL'].includes(state) && <p className="muted">Regional review is complete. The Planner is working on the allocation.</p>}
+      {state === 'PLANNING' && <p className="muted">Regional review is complete. The Planner is working on the allocation.</p>}
+      {state === 'REGIONAL_FINALIZATION' && mine.map((r) => (
+        <p key={r.region}>
+          <b>{r.region}</b>: {r.finalizeStatus === 'FINALIZED'
+            ? <><span className="ok">finalized ✓</span> <button onClick={() => run('UNFINALIZE_REGION', r.region, `${r.region} reopened for changes.`)}>Un-finalize</button></>
+            : <>review the allocation, agree any transfers, then{' '}
+                <button disabled={!perms.finalizableRegions.includes(r.region)} onClick={() => window.confirm(`Finalize ${r.region}? Pending transfers must be settled first.`) && run('FINALIZE_REGION', r.region, `${r.region} finalized.`)}>Finalize {r.region}</button>
+                {detail.cycle.finalizeDeadline && <span className="muted"> (deadline {new Date(detail.cycle.finalizeDeadline).toLocaleString()})</span>}</>}
+          {' '}<button className="link" onClick={() => api.exportAllocation(cycleId, 'final', r.region).catch((e) => setMessage({ kind: 'error', text: e.message }))}>Download {r.region} (xlsx)</button>
+        </p>
+      ))}
+      {state === 'FINAL' && <p className="ok">The cycle is FINAL. {mine.map((r) => <button key={r.region} className="link" onClick={() => api.exportAllocation(cycleId, 'final', r.region)}>Download {r.region}</button>)}</p>}
       {message && <p className={message.kind === 'ok' ? 'ok' : 'error'}>{message.text}</p>}
     </section>
   )

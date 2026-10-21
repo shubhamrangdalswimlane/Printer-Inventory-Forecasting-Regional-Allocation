@@ -36,7 +36,7 @@ export default function PlannerActions({ api, cycleId, detail, perms, onDone }: 
     <section className="card">
       <h3>Forecast workflow</h3>
       <p className="muted">Cycle {detail.cycle.month} is in <b>{detail.cycle.state}</b>.</p>
-      <input placeholder="Comment (required)" value={comment} onChange={(e) => setComment(e.target.value)} />
+      <input aria-label="Comment" placeholder="Comment (required)" value={comment} onChange={(e) => setComment(e.target.value)} />
       {perms.canReturnRegions && (
         <p>
           Return to Regional Managers:{' '}

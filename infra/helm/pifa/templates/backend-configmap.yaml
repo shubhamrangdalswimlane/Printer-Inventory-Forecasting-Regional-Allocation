@@ -1,0 +1,39 @@
+# backend-configmap.yaml - non-secret settings shared by the api and worker pods, loaded with envFrom. Names are
+# the environment variables read by backend/app/src/main/resources/application.yml. Secrets (DB password,
+# Keycloak client secret, key files) are NOT here; they come from Secrets (see _helpers.tpl).
+{{- include "pifa.validate" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pifa.fullname" . }}-backend
+  labels:
+    {{- include "pifa.componentLabels" (dict "root" . "component" "backend") | nindent 4 }}
+data:
+  {{- with .Values.config.springProfilesActive }}
+  SPRING_PROFILES_ACTIVE: {{ . | quote }}
+  {{- end }}
+  PIFA_DB_URL: {{ .Values.config.db.url | quote }}
+  PIFA_OIDC_ISSUER: {{ .Values.config.oidcIssuer | quote }}
+  {{- with .Values.config.jwkSetUri }}
+  # Only set when given: an empty value makes Spring build two token decoders and refuse to start.
+  SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: {{ . | quote }}
+  {{- end }}
+  PIFA_STORAGE_TYPE: {{ .Values.config.storage.type | quote }}
+  PIFA_S3_BUCKET: {{ .Values.config.storage.s3.bucket | quote }}
+  PIFA_S3_REGION: {{ .Values.config.storage.s3.region | quote }}
+  PIFA_S3_ENDPOINT: {{ .Values.config.storage.s3.endpoint | quote }}
+  PIFA_S3_KMS: {{ .Values.config.storage.s3.kms | quote }}
+  PIFA_CLAMAV_ENABLED: {{ .Values.config.clamav.enabled | quote }}
+  PIFA_CLAMAV_HOST: {{ include "pifa.clamavHost" . | quote }}
+  PIFA_CLAMAV_PORT: {{ .Values.config.clamav.port | quote }}
+  PIFA_SFTP_HOST: {{ .Values.config.sftp.host | quote }}
+  PIFA_SFTP_PORT: {{ .Values.config.sftp.port | quote }}
+  PIFA_SFTP_USER: {{ .Values.config.sftp.user | quote }}
+  PIFA_SFTP_STRICT_HOST_KEY: {{ .Values.config.sftp.strictHostKey | quote }}
+  PIFA_MAIL_ENABLED: {{ .Values.config.mail.enabled | quote }}
+  PIFA_SMTP_HOST: {{ .Values.config.mail.smtpHost | quote }}
+  PIFA_SMTP_PORT: {{ .Values.config.mail.smtpPort | quote }}
+  PIFA_SYNTHETIC_ENABLED: {{ .Values.config.syntheticEnabled | quote }}
+  PIFA_KEYCLOAK_ADMIN_URL: {{ .Values.config.keycloak.adminUrl | quote }}
+  PIFA_KEYCLOAK_REALM: {{ .Values.config.keycloak.realm | quote }}
+  PIFA_RETENTION_DROP_PARTITIONS: {{ .Values.config.retentionDropPartitions | quote }}

@@ -16,4 +16,12 @@ export default defineConfig({
     // Override with VITE_API_TARGET when the API listens elsewhere (e.g. port 8080 is taken).
     proxy: { '/api': process.env.VITE_API_TARGET ?? 'http://localhost:8080' },
   },
+  // `vite preview` serves the production build (used by the end-to-end tests and CI) with the same proxy.
+  preview: {
+    port: 4173,
+    // Vite only answers requests addressed to localhost unless told otherwise (DNS-rebinding protection).
+    // The E2E containers reach the preview server as http://web:4173, so that name is allowed too.
+    allowedHosts: ['web'],
+    proxy: { '/api': process.env.VITE_API_TARGET ?? 'http://localhost:8080' },
+  },
 })

@@ -28,12 +28,16 @@ public final class CyclePurger {
         jdbc.sql("DELETE FROM ingestion_job WHERE version_id IN (" + versions + ")").param("c", cycleId).update();
         jdbc.sql("DELETE FROM forecast_line WHERE version_id IN (" + versions + ")").param("c", cycleId).update();
         jdbc.sql("DELETE FROM inventory_line WHERE version_id IN (" + versions + ")").param("c", cycleId).update();
-        jdbc.sql("UPDATE dataset_version SET parent_version_id = NULL WHERE cycle_id = :c").param("c", cycleId).update();
+        jdbc.sql("DELETE FROM allocation_line WHERE version_id IN (" + versions + ")").param("c", cycleId).update();
+        jdbc.sql("DELETE FROM plan_product_stock WHERE cycle_id = :c").param("c", cycleId).update();
+        jdbc.sql("DELETE FROM transfer_request WHERE cycle_id = :c").param("c", cycleId).update();
+        jdbc.sql("UPDATE dataset_version SET parent_version_id = NULL, inventory_version_id = NULL WHERE cycle_id = :c").param("c", cycleId).update();
         jdbc.sql("DELETE FROM dataset_version WHERE cycle_id = :c").param("c", cycleId).update();
         jdbc.sql("DELETE FROM plan_line WHERE cycle_id = :c").param("c", cycleId).update();
         jdbc.sql("DELETE FROM change_log WHERE cycle_id = :c").param("c", cycleId).update();
         jdbc.sql("DELETE FROM workflow_event WHERE cycle_id = :c").param("c", cycleId).update();
         jdbc.sql("DELETE FROM cycle_region_status WHERE cycle_id = :c").param("c", cycleId).update();
+        jdbc.sql("DELETE FROM deadline_reminder WHERE cycle_id = :c").param("c", cycleId).update();
         jdbc.sql("DELETE FROM notification WHERE cycle_id = :c").param("c", cycleId).update();
         jdbc.sql("DELETE FROM planning_cycle WHERE id = :c").param("c", cycleId).update();
     }

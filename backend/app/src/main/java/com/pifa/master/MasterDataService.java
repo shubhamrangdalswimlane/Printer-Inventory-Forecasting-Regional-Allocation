@@ -44,6 +44,18 @@ public class MasterDataService {
         return map;
     }
 
+    /**
+     * Lookup for the optional {@code Product_code} column (Phase 7).
+     *
+     * @return map from normalised code to product id, active products with a code only
+     */
+    public Map<String, UUID> productCodeLookup() {
+        Map<String, UUID> map = new HashMap<>();
+        jdbc.sql("SELECT product_code, id FROM product WHERE active AND product_code IS NOT NULL")
+            .query((rs, n) -> map.put(rs.getString(1), rs.getObject(2, UUID.class))).list();
+        return map;
+    }
+
     /** @return all active products ordered by name */
     public List<Product> activeProducts() {
         return jdbc.sql("SELECT id, product_name FROM product WHERE active ORDER BY product_name")
