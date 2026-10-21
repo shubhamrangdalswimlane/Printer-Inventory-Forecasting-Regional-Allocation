@@ -1,0 +1,6 @@
+:root { font-family: system-ui, sans-serif; color: #1c2733; }
+body { margin: 0; background: #f6f8fb; }
+main { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+header { display: flex; gap: 16px; align-items: center; }
+header h1 { margin: 0; flex: 1; }
+button { padding: 6px 14px; cursor: pointer; }

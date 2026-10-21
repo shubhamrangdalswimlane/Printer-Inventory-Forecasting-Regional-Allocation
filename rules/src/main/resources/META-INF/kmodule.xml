@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kmodule xmlns="http://www.drools.org/xsd/kmodule">
+  <kbase name="pifaKBase" packages="pifa.rules.allocation.strategy" default="true">
+    <ksession name="pifaStateless" type="stateless" default="true"/>
+  </kbase>
+</kmodule>

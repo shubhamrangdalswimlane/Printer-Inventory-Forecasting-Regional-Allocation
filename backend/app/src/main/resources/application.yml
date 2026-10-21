@@ -1,0 +1,31 @@
+spring:
+  application:
+    name: pifa
+  datasource:
+    url: ${PIFA_DB_URL:jdbc:postgresql://localhost:5432/pifa}
+    username: ${PIFA_DB_USER:pifa}
+    password: ${PIFA_DB_PASSWORD:pifa}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${PIFA_OIDC_ISSUER:http://localhost:8081/realms/pifa-dev}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+server:
+  port: 8080

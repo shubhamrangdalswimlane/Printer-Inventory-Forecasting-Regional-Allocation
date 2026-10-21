@@ -1,0 +1,21 @@
+package pifa.rules.allocation.strategy;
+
+import com.pifa.rules.model.ProductStock;
+import com.pifa.rules.model.Classification;
+
+// BR-AL-02: constrained if total revised demand > allocatable stock
+rule "Classify constrained product"
+    salience 100
+when
+    $s : ProductStock( classification == null, totalDemand > allocatableQty )
+then
+    modify( $s ) { setClassification( Classification.CONSTRAINED ) }
+end
+
+rule "Classify sufficient product"
+    salience 90
+when
+    $s : ProductStock( classification == null )
+then
+    modify( $s ) { setClassification( Classification.SUFFICIENT ) }
+end

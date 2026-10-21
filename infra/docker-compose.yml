@@ -1,0 +1,56 @@
+# Local stack for development. Dev-only credentials; never reuse outside local.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: pifa
+      POSTGRES_USER: pifa
+      POSTGRES_PASSWORD: pifa
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pifa"]
+      interval: 5s
+      retries: 10
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: start-dev --import-realm
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HTTP_PORT: 8081
+    ports: ["8081:8081"]
+    volumes:
+      - ./keycloak/realm-pifa-dev.json:/opt/keycloak/data/import/realm-pifa-dev.json:ro
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: pifa
+      MINIO_ROOT_PASSWORD: pifa-minio-dev
+    ports: ["9000:9000", "9001:9001"]
+    volumes: [miniodata:/data]
+
+  sftp:
+    image: atmoz/sftp
+    # user:pass:uid:gid:folder — each account is chrooted to its own folder
+    command:
+      - sftp-forecast:forecast-dev:1001:100:inbound/forecast
+      - sftp-inventory:inventory-dev:1002:100:inbound/inventory
+    ports: ["2222:22"]
+    volumes: [sftpdata:/home]
+
+  clamav:
+    image: clamav/clamav:stable
+    ports: ["3310:3310"]
+
+  mailpit:
+    image: axllent/mailpit
+    ports: ["1025:1025", "8025:8025"]
+
+volumes:
+  pgdata:
+  miniodata:
+  sftpdata:
