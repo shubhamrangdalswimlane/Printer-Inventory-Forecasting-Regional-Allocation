@@ -15,7 +15,8 @@
   <parent>
     <groupId>org.springframework.boot</groupId>
     <artifactId>spring-boot-starter-parent</artifactId>
-    <version>3.3.5</version>
+    <!-- 3.5.12 fixes the Actuator authentication-bypass CVE-2026-22733 reported by the Trivy scan. -->
+    <version>3.5.12</version>
     <relativePath/>
   </parent>
 
@@ -36,5 +37,8 @@
     <java.version>21</java.version>
     <!-- Pinned in Phase 0. The docs target 10.x; 9.44 was chosen for the first spike. -->
     <drools.version>9.44.0.Final</drools.version>
+    <!-- Overrides the version Spring Boot manages. Fixes the pgJDBC HIGH CVEs (CVE-2025-49146,
+         CVE-2026-42198, CVE-2026-54291); the scanner named 42.7.12 as the minimum fixed version. -->
+    <postgresql.version>42.7.14</postgresql.version>
   </properties>
 </project>
