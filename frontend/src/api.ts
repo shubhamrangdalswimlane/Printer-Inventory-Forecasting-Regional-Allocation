@@ -170,8 +170,11 @@ export type AllocFinding = { code: string; severity: 'ERROR' | 'WARNING'; produc
 export type ParamValues = {
   regionWeights: Record<string, number>; changeThresholdPct: number; minRegionFloor: number; spikeFactor: number; capAtDemand: boolean; autoActivateForecast: boolean
   /** Phase 7: FIXED = regionWeights for every product; SALES_SHARE = each product's sales share over shareMonths (fixed weights when it has no sales). */
-  weightMode: 'FIXED' | 'SALES_SHARE'; shareMonths: number
+  weightMode: AllocBasis; shareMonths: number
 }
+
+/** How short stock is split between regions: FIXED = the region weights, FORECAST_SHARE = in proportion to each region's forecast, SALES_SHARE = by sales history. */
+export type AllocBasis = 'FIXED' | 'FORECAST_SHARE' | 'SALES_SHARE'
 
 /** One stored rule-parameter version. */
 export type ParamVersion = { version: number; values: ParamValues; effectiveFrom: string; changedBy: string; reason: string | null; createdAt: string }
@@ -279,6 +282,8 @@ export function createApi(token: string) {
 
   return {
     // ---- datasets (Phase 1)
+    /** The data rows of one dataset version (inventory: product, availableQty, asOfDate). */
+    datasetLines: (id: string) => json<Record<string, unknown>[]>(`/datasets/${id}/lines`),
     /** Lists versions; Admin may include deleted ones. */
     versions: (type: string, includeDeleted = false) => json<Version[]>(`/datasets?type=${type}&includeDeleted=${includeDeleted}`),
     /** Uploads a file through the same pipeline as SFTP. Rejections come back as a result, not an error. */
@@ -339,9 +344,10 @@ export function createApi(token: string) {
     allocation: (id: string, q: string, constrained: boolean, page: number, size = 50) =>
       json<AllocPage>(`/cycles/${id}/allocation?q=${encodeURIComponent(q)}&constrained=${constrained}&page=${page}&size=${size}`),
     /** What a re-run would change, without saving. */
-    previewAllocation: (id: string) => json<Proposal>(`/cycles/${id}/allocation/preview`, { method: 'POST' }),
+    /** Preview of a run; basis (optional) overrides how short stock is split for this run. */
+    previewAllocation: (id: string, basis?: AllocBasis) => json<Proposal>(`/cycles/${id}/allocation/preview${basis ? `?basis=${basis}` : ''}`, { method: 'POST' }),
     /** Runs the Drools allocation and stores it (replaces the Planner's edits). */
-    runAllocation: (id: string) => json<Proposal>(`/cycles/${id}/allocation/proposal`, { method: 'POST' }),
+    runAllocation: (id: string, basis?: AllocBasis) => json<Proposal>(`/cycles/${id}/allocation/proposal${basis ? `?basis=${basis}` : ''}`, { method: 'POST' }),
     /** Allocation findings of a stage. */
     allocationViolations: (id: string, stage: 'APPROVED' | 'FINAL') => json<AllocFinding[]>(`/cycles/${id}/allocation/violations?stage=${stage}`),
     /** Sets a product's reserve. */

@@ -208,6 +208,7 @@ export function RuleParametersTab({ api, editable }: { api: Api; editable: boole
           <tr><td>Constrained split basis</td><td>
             <select disabled={!editable} value={form.weightMode} onChange={(e) => setForm({ ...form, weightMode: e.target.value as ParamValues['weightMode'] })}>
               <option value="FIXED">Fixed weights above, for every product</option>
+              <option value="FORECAST_SHARE">In proportion to each region's forecast</option>
               <option value="SALES_SHARE">Each product's own sales share by region</option>
             </select>
             {form.weightMode === 'SALES_SHARE' && <> over the last <input className="narrow" type="number" min={1} max={36} disabled={!editable} value={form.shareMonths}

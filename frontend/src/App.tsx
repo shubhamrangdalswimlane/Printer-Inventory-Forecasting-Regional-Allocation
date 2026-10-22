@@ -27,6 +27,8 @@ import ValidationPanel from './features/forecast/ValidationPanel'
 import NotificationBell from './features/notifications/NotificationBell'
 import AllocationActions from './features/planning/AllocationActions'
 import AllocationGrid from './features/planning/AllocationGrid'
+import InventoryPanel from './features/planning/InventoryPanel'
+import RegionFilter from './features/planning/RegionFilter'
 import FinalizationMonitor from './features/planning/FinalizationMonitor'
 import PlannerActions from './features/planning/PlannerActions'
 import RegionalActions from './features/regional/RegionalActions'
@@ -87,6 +89,7 @@ function Dashboard({ path, me, api, token }: { path: string; me: Me; api: Api; t
   const cycle = useCycle(api)
   const cid = cycle.selectedId
   const key = cycle.version // changes after every reload, so child panels refetch
+  const [plannerRegion, setPlannerRegion] = useState<string | null>(null) // Planner's region filter (null = all regions)
   const state = cycle.perms?.state ?? ''
   // Someone else changed this cycle: reload (debounced inside the hook).
   useLiveEvents(token, cid, cycle.reload)
@@ -127,15 +130,17 @@ function Dashboard({ path, me, api, token }: { path: string; me: Me; api: Api; t
       {path === '/planner' && (
         <>
           {cid && <PlannerActions api={api} cycleId={cid} detail={cycle.detail} perms={cycle.perms} onDone={cycle.reload} />}
+          {cid && <RegionFilter regions={cycle.detail?.regions.map((r) => r.region) ?? ['NORTH', 'EAST', 'WEST', 'SOUTH']} value={plannerRegion} onChange={setPlannerRegion} />}
           {cid && ALLOCATION_STATES.includes(state) && (
             <>
               <AllocationActions api={api} cycleId={cid} perms={cycle.perms} refreshKey={key} onDone={cycle.reload} />
               <FinalizationMonitor api={api} cycleId={cid} detail={cycle.detail} perms={cycle.perms} onDone={cycle.reload} />
               {state === 'REGIONAL_FINALIZATION' && <TransferPanel api={api} cycleId={cid} perms={cycle.perms} username={me.username} myRegions={[]} refreshKey={key} onChanged={cycle.reload} />}
-              <AllocationGrid api={api} cycleId={cid} mode="planner" perms={cycle.perms} refreshKey={key} onSaved={cycle.reload} />
+              <AllocationGrid api={api} cycleId={cid} mode="planner" perms={cycle.perms} refreshKey={key} onSaved={cycle.reload} onlyRegion={plannerRegion} />
             </>
           )}
-          {cid && !ALLOCATION_STATES.includes(state) && <ForecastGrid api={api} cycleId={cid} mode="readonly" perms={cycle.perms} refreshKey={key} onSaved={cycle.reload} />}
+          {cid && !ALLOCATION_STATES.includes(state) && <InventoryPanel api={api} cycleId={cid} refreshKey={key} region={plannerRegion} />}
+          {cid && !ALLOCATION_STATES.includes(state) && <ForecastGrid api={api} cycleId={cid} mode="readonly" perms={cycle.perms} refreshKey={key} onSaved={cycle.reload} onlyRegion={plannerRegion} />}
           <UploadPanel api={api} kind="inventory" onDone={cycle.reload} />
           <IngestionPanel api={api} refreshKey={key} />
           <VersionHistoryPanel api={api} type="INVENTORY_UPLOAD" canActivate canDelete isAdmin={false} refreshKey={key} />

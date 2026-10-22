@@ -4,7 +4,7 @@
  * (with a comment and a finalization deadline), and export.
  */
 import { useEffect, useState } from 'react'
-import type { AllocFinding, Api, Perms, Proposal } from '../../api'
+import type { AllocBasis, AllocFinding, Api, Perms, Proposal } from '../../api'
 
 /**
  * @param props.api        API client
@@ -15,6 +15,7 @@ import type { AllocFinding, Api, Perms, Proposal } from '../../api'
  */
 export default function AllocationActions({ api, cycleId, perms, refreshKey, onDone }: { api: Api; cycleId: string; perms: Perms | null; refreshKey: number; onDone: () => void }) {
   const [preview, setPreview] = useState<Proposal | null>(null)
+  const [basis, setBasis] = useState<AllocBasis | ''>('')
   const [findings, setFindings] = useState<AllocFinding[]>([])
   const [comment, setComment] = useState('')
   const [deadline, setDeadline] = useState('')
@@ -40,9 +41,22 @@ export default function AllocationActions({ api, cycleId, perms, refreshKey, onD
       <h3>Allocation</h3>
       {planning && perms.canRunAllocation && (
         <p>
-          <button disabled={busy} onClick={() => act(async () => { const p = await api.previewAllocation(cycleId); setPreview(p); return `Preview: ${p.changedCells} cell(s) would change.` })}>Preview run</button>
+          <label>If stock is short, assign{' '}
+            <select value={basis} onChange={(e) => setBasis(e.target.value as AllocBasis | '')}>
+              <option value="">using the rule parameters (default)</option>
+              <option value="FIXED">equally by region weights (25% each)</option>
+              <option value="FORECAST_SHARE">as per each region's forecast</option>
+              <option value="SALES_SHARE">as per each region's sales history</option>
+            </select>
+          </label>{' '}
+          <small className="muted">Products with enough stock always get their full forecast.</small>
+        </p>
+      )}
+      {planning && perms.canRunAllocation && (
+        <p>
+          <button disabled={busy} onClick={() => act(async () => { const p = await api.previewAllocation(cycleId, basis || undefined); setPreview(p); return `Preview: ${p.changedCells} cell(s) would change.` })}>Preview run</button>
           <button disabled={busy} onClick={() => window.confirm('Run the allocation? It replaces the current approved numbers, including your edits.') &&
-            act(async () => { const p = await api.runAllocation(cycleId); setPreview(null); onDone(); return `Allocated ${p.products} products (${p.constrained} constrained) with rules ${p.rulesetVersion}, parameters v${p.parameterVersion}.` })}>
+            act(async () => { const p = await api.runAllocation(cycleId, basis || undefined); setPreview(null); onDone(); return `Allocated ${p.products} products (${p.constrained} constrained) with rules ${p.rulesetVersion}, parameters v${p.parameterVersion}.` })}>
             Run allocation
           </button>
         </p>

@@ -29,8 +29,10 @@ type Pending = { field: 'PUBLISHED' | 'REVISED'; value: number; reason: string; 
  */
 export default function ForecastGrid(props: {
   api: Api; cycleId: string; mode: 'forecaster' | 'regional' | 'readonly'; perms: Perms | null; refreshKey: number; onSaved: () => void
+  /** Show only this region's column (null/undefined = all regions); the Total column always sums all regions. */
+  onlyRegion?: string | null
 }) {
-  const { api, cycleId, mode, perms, refreshKey, onSaved } = props
+  const { api, cycleId, mode, perms, refreshKey, onSaved, onlyRegion } = props
   const [page, setPage] = useState(0)
   const [search, setSearch] = useState('')
   const [data, setData] = useState<GridPage | null>(null)
@@ -50,7 +52,8 @@ export default function ForecastGrid(props: {
 
   useEffect(() => { setPending({}); load() }, [load, refreshKey])
 
-  const regionCodes = data && data.rows[0] ? Object.keys(data.rows[0].regions) : ['NORTH', 'EAST', 'WEST', 'SOUTH']
+  const allRegionCodes = data && data.rows[0] ? Object.keys(data.rows[0].regions) : ['NORTH', 'EAST', 'WEST', 'SOUTH']
+  const regionCodes = onlyRegion ? allRegionCodes.filter((r) => r === onlyRegion) : allRegionCodes
   const editableRevised = new Set(mode === 'regional' ? perms?.editableRegions ?? [] : [])
   const canEditPublished = mode === 'forecaster' && !!perms?.canEditPublished
 

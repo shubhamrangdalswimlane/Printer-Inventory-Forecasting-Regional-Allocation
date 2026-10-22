@@ -128,16 +128,37 @@ public class AllocationService {
      */
     @Transactional
     public ProposalResult propose(UUID cycleId, boolean save, CurrentUser user) {
+        return propose(cycleId, save, user, null);
+    }
+
+    /**
+     * Same as {@link #propose(UUID, boolean, CurrentUser)} but the Planner chooses how constrained stock is split for
+     * this run. Products with enough stock always get their full demand ("as per forecast"); the basis only matters
+     * when stock is short.
+     *
+     * @param basis {@code FIXED} (the region weights, 25% each by default = "split the stock equally"),
+     *              {@code FORECAST_SHARE} (in proportion to each region's forecast), {@code SALES_SHARE} (by sales history),
+     *              or null / blank to use the rule parameters' current mode
+     * @throws ApiException 400 for an unknown basis, 403 not Planner, 409 cycle not in PLANNING
+     */
+    @Transactional
+    public ProposalResult propose(UUID cycleId, boolean save, CurrentUser user, String basis) {
         if (!user.has("planner")) throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "Only the Planner may run the allocation");
         requireState(cycleId, "PLANNING");
+        if (basis != null && !basis.isBlank() && !List.of("FIXED", "FORECAST_SHARE", "SALES_SHARE").contains(basis)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_BASIS", "Basis must be FIXED, FORECAST_SHARE or SALES_SHARE");
+        }
         long t0 = System.nanoTime();
         var version = params.current();
+        String mode = basis == null || basis.isBlank() ? version.values().weightMode() : basis;
+        boolean useSales = "SALES_SHARE".equals(mode);
+        boolean useForecast = "FORECAST_SHARE".equals(mode);
         List<String> regions = master.activeRegionCodes();
         String[] regionArr = regions.toArray(String[]::new);
         int[] weights = regions.stream().mapToInt(r -> version.values().regionWeights().getOrDefault(r, 0)).toArray();
         Map<UUID, Product> products = load(cycleId);
         // Phase 7 weight mode: each product's own sales share per region (null map entry = no sales, use fixed weights).
-        Map<UUID, int[]> shareWeights = version.values().salesShare() ? salesShareWeights(regions, version.values().shareMonths()) : Map.of();
+        Map<UUID, int[]> shareWeights = useSales ? salesShareWeights(regions, version.values().shareMonths()) : Map.of();
         long tLoaded = System.nanoTime();
 
         List<ProductStock> facts = new ArrayList<>();
@@ -160,14 +181,19 @@ public class AllocationService {
             int[] demand = regions.stream().mapToInt(r -> p.demand.getOrDefault(r, 0)).toArray();
             Strategy s = strategy.get(p.id.toString());
             int[] w = shareWeights.getOrDefault(p.id, weights);
+            if (useForecast) {
+                int[] byDemand = AllocationCalculator.sharePercent(java.util.Arrays.stream(demand).asLongStream().toArray());
+                if (byDemand != null) w = byDemand;
+            }
             AllocationCalculator.Result r = switch (s) {
                 case FULL_DEMAND -> AllocationCalculator.fullDemand(p.allocatable, demand);
                 case WEIGHTED_BASELINE -> AllocationCalculator.weightedBaseline(p.allocatable, demand, w, regionArr);
                 case WEIGHTED_BASELINE_CAPPED -> AllocationCalculator.weightedBaselineCapped(p.allocatable, demand, w, regionArr);
             };
-            if (s != Strategy.FULL_DEMAND && version.values().salesShare()) {
-                String basis = w == weights ? " (no sales history: fixed weights)" : " (sales share, last " + version.values().shareMonths() + " months)";
-                r = new AllocationCalculator.Result(r.alloc(), r.unallocated(), r.explanation() + basis);
+            if (s != Strategy.FULL_DEMAND && (useSales || useForecast)) {
+                String why = w == weights ? " (no " + (useSales ? "sales history" : "forecast") + ": fixed weights)"
+                    : useSales ? " (sales share, last " + version.values().shareMonths() + " months)" : " (in proportion to forecast)";
+                r = new AllocationCalculator.Result(r.alloc(), r.unallocated(), r.explanation() + why);
             }
             if (classes.get(p.id.toString()) == Classification.CONSTRAINED) constrained++;
             for (int i = 0; i < regionArr.length; i++) {

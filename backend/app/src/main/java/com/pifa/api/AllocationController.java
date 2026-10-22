@@ -59,16 +59,19 @@ public class AllocationController {
         return allocation.grid(id, q, constrained, page, size);
     }
 
-    /** {@code POST /cycles/{id}/allocation/preview} - what a re-run would change, without saving (Planner). */
+    /**
+     * {@code POST /cycles/{id}/allocation/preview[?basis=FIXED|FORECAST_SHARE|SALES_SHARE]} - what a re-run would change,
+     * without saving (Planner). The optional basis overrides how constrained stock is split for this run.
+     */
     @PostMapping("/allocation/preview")
-    public AllocationService.ProposalResult preview(@PathVariable UUID id, Authentication auth) {
-        return allocation.propose(id, false, CurrentUser.from(auth));
+    public AllocationService.ProposalResult preview(@PathVariable UUID id, @RequestParam(required = false) String basis, Authentication auth) {
+        return allocation.propose(id, false, CurrentUser.from(auth), basis);
     }
 
-    /** {@code POST /cycles/{id}/allocation/proposal} - run the Drools allocation and store it (Planner). */
+    /** {@code POST /cycles/{id}/allocation/proposal[?basis=...]} - run the allocation and store it (Planner); see preview for basis. */
     @PostMapping("/allocation/proposal")
-    public AllocationService.ProposalResult propose(@PathVariable UUID id, Authentication auth) {
-        return allocation.propose(id, true, CurrentUser.from(auth));
+    public AllocationService.ProposalResult propose(@PathVariable UUID id, @RequestParam(required = false) String basis, Authentication auth) {
+        return allocation.propose(id, true, CurrentUser.from(auth), basis);
     }
 
     /** {@code GET /cycles/{id}/allocation/violations?stage=APPROVED|FINAL} - Drools allocation findings. */

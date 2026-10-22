@@ -26,8 +26,10 @@ type Pending = { value: number; reason: string; rowVersion: number; proposed: nu
  */
 export default function AllocationGrid(props: {
   api: Api; cycleId: string; mode: 'planner' | 'regional' | 'readonly'; perms: Perms | null; myRegions?: string[]; refreshKey: number; onSaved: () => void
+  /** Show only this region's column (null/undefined = all regions); Total and the stock check still use all regions. */
+  onlyRegion?: string | null
 }) {
-  const { api, cycleId, mode, perms, myRegions = [], refreshKey, onSaved } = props
+  const { api, cycleId, mode, perms, myRegions = [], refreshKey, onSaved, onlyRegion } = props
   const [page, setPage] = useState(0)
   const [search, setSearch] = useState('')
   const [onlyConstrained, setOnlyConstrained] = useState(false)
@@ -94,6 +96,7 @@ export default function AllocationGrid(props: {
   }
 
   const regions = data && data.rows[0] ? Object.keys(data.rows[0].regions) : ['NORTH', 'EAST', 'WEST', 'SOUTH']
+  const shownRegions = onlyRegion ? regions.filter((r) => r === onlyRegion) : regions
   const pages = data ? Math.max(1, Math.ceil(data.total / size)) : 1
   const s = data?.summary
 
@@ -118,7 +121,7 @@ export default function AllocationGrid(props: {
           <thead>
             <tr>
               <th className="sticky">Product</th><th>Available</th><th>Reserve</th><th>Allocatable</th><th>Status</th>
-              {regions.map((r) => <th key={r} className={myRegions.includes(r) ? 'mine' : ''}>{r}<br /><small>demand → {stage}</small></th>)}
+              {shownRegions.map((r) => <th key={r} className={myRegions.includes(r) ? 'mine' : ''}>{r}<br /><small>demand → {stage}</small></th>)}
               <th>Total</th><th>Coverage</th>
               {mode === 'regional' && myRegions.length > 0 && <th>My fill rate</th>}
             </tr>
@@ -144,7 +147,7 @@ export default function AllocationGrid(props: {
                   <td title={row.stock.explanation ?? ''}>
                     <span className={`pill ${row.stock.classification === 'CONSTRAINED' ? 'open-pill' : 'ok-pill'}`}>{row.stock.classification ?? '—'}</span>
                   </td>
-                  {regions.map((r) => {
+                  {shownRegions.map((r) => {
                     const c = row.regions[r]
                     if (!c) return <td key={r}>—</td>
                     const p = pending[c.lineId]

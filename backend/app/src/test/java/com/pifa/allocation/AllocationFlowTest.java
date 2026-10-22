@@ -134,6 +134,17 @@ class AllocationFlowTest {
         assertThat(alloc(c, "approved_alloc_qty")).containsExactly(26, 26, 25, 25);
         jdbc.sql("UPDATE plan_product_stock SET available_qty = 100 WHERE cycle_id = :c AND product_id = :p").param("c", c).param("p", modelA).update();
         allocation.propose(c, true, PLANNER);
+
+        // "Assign as per forecast": the same 100 units for demand 40/35/30/25 are shared in proportion to demand
+        // (30.8% / 26.9% / 23.1% / 19.2% -> 31/27/23/19), not 25 each. An unknown basis is refused.
+        allocation.propose(c, true, PLANNER, "FORECAST_SHARE");
+        assertThat(alloc(c, "approved_alloc_qty")).containsExactly(31, 27, 23, 19);
+        assertThat(jdbc.sql("SELECT allocation_explanation FROM plan_product_stock WHERE cycle_id = :c AND product_id = :p")
+            .param("c", c).param("p", modelA).query(String.class).single()).endsWith("(in proportion to forecast)");
+        assertThatThrownBy(() -> allocation.propose(c, false, PLANNER, "NOPE"))
+            .isInstanceOfSatisfying(ApiException.class, e -> assertThat(e.getCode()).isEqualTo("INVALID_BASIS"));
+        allocation.propose(c, true, PLANNER); // back to the default for the tests that follow
+        assertThat(alloc(c, "approved_alloc_qty")).containsExactly(25, 25, 25, 25);
     }
 
     /** Planner edits: a deviation needs a reason; a total above stock is an ERROR that blocks approval (BR-VA-01 / BR-WF-02). */

@@ -37,8 +37,10 @@ public class RuleParameterService {
      * @param capAtDemand          cap constrained regions at their demand (default off)
      * @param autoActivateForecast a new valid forecast upload becomes active automatically while in draft (default on)
      * @param weightMode           how constrained stock is split (Phase 7): {@code FIXED} uses {@code regionWeights} for every
-     *                             product; {@code SALES_SHARE} uses each product's share of sales per region over the last
-     *                             {@code shareMonths} months, falling back to {@code regionWeights} for a product without sales
+     *                             product; {@code FORECAST_SHARE} splits each product's stock in proportion to the regions'
+     *                             forecast ("assign as per forecast"); {@code SALES_SHARE} uses each product's share of sales
+     *                             per region over the last {@code shareMonths} months. Both fall back to {@code regionWeights}
+     *                             for a product with no forecast / no sales. The Planner may override the mode for one run.
      * @param shareMonths          look-back window for SALES_SHARE, 1..36 months (default 12)
      */
     public record Values(Map<String, Integer> regionWeights, double changeThresholdPct, int minRegionFloor,
@@ -58,6 +60,9 @@ public class RuleParameterService {
 
         /** @return true when constrained products are split by their own historical sales share */
         public boolean salesShare() { return "SALES_SHARE".equals(weightMode); }
+
+        /** @return true when constrained products are split in proportion to the regions' forecast */
+        public boolean forecastShare() { return "FORECAST_SHARE".equals(weightMode); }
     }
 
     /**
@@ -145,7 +150,7 @@ public class RuleParameterService {
         if (v.changeThresholdPct() < 0 || v.changeThresholdPct() > 1000) throw bad("Change threshold must be 0..1000 %");
         if (v.minRegionFloor() < 0) throw bad("Minimum region floor cannot be negative");
         if (v.spikeFactor() <= 0) throw bad("Spike factor must be greater than 0");
-        if (!List.of("FIXED", "SALES_SHARE").contains(v.weightMode())) throw bad("Weight mode must be FIXED or SALES_SHARE");
+        if (!List.of("FIXED", "FORECAST_SHARE", "SALES_SHARE").contains(v.weightMode())) throw bad("Weight mode must be FIXED, FORECAST_SHARE or SALES_SHARE");
         if (v.shareMonths() < 1 || v.shareMonths() > 36) throw bad("Sales-share window must be 1..36 months");
     }
 
