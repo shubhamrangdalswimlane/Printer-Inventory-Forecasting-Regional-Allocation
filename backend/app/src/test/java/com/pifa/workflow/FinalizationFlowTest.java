@@ -206,7 +206,8 @@ class FinalizationFlowTest {
         assertThat(f.params()).isNotNull();
         // The transfer that moved North from 25 to 30, with who and why
         assertThat(jdbc.sql("SELECT actor || '|' || old_value || '->' || new_value || '|' || reason FROM change_log WHERE cycle_id = :c AND product_id = :p AND region_code = 'NORTH' AND field = 'FINAL'")
-            .param("c", c).param("p", modelA).query(String.class).list()).singleElement().satisfies(s -> assertThat(s).startsWith("evan.east|25->30|transfer ").endsWith("key account"));
+            .param("c", c).param("p", modelA).query(String.class).list().stream().filter(s -> s.endsWith("key account")).toList())
+            .singleElement().satisfies(s -> assertThat(s).startsWith("evan.east|25->30|transfer "));
     }
 
     /** Admin reopens FINAL (reason required, high-severity audit); the Planner can then reopen the allocation, cancelling pending transfers. */
@@ -239,7 +240,9 @@ class FinalizationFlowTest {
         assertThat(a).hasSize(1);
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> flows = (List<Map<String, Object>>) a.get(0).get("transferFlows");
-        assertThat(flows).anyMatch(f -> f.get("from").equals("EAST") && f.get("to").equals("NORTH") && ((Number) f.get("units")).intValue() == 5);
+        // 5 units by accepted request + 3 moved directly (then 3 moved back the other way) in workedExampleTransfer
+        assertThat(flows).anyMatch(f -> f.get("from").equals("EAST") && f.get("to").equals("NORTH") && ((Number) f.get("units")).intValue() == 8);
+        assertThat(flows).anyMatch(f -> f.get("from").equals("NORTH") && f.get("to").equals("EAST") && ((Number) f.get("units")).intValue() == 3);
         @SuppressWarnings("unchecked")
         Map<String, Object> hours = (Map<String, Object>) a.get(0).get("stageHours");
         assertThat(hours.get("regionalReview")).isNotNull();
