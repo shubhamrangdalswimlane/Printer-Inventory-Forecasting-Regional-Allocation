@@ -27,7 +27,8 @@ import org.springframework.transaction.annotation.Transactional;
  * <ul>
  *   <li>REQUEST (the receiver asks): the donor region's manager accepts or rejects;</li>
  *   <li>OFFER (the donor offers): the receiving region's manager accepts or rejects;</li>
- *   <li>DIRECT (one manager owns both regions): applied immediately;</li>
+ *   <li>DIRECT (one manager owns both regions, or the manager chose "move now" for a region they manage):
+ *       applied immediately; the other region's manager is told what changed;</li>
  *   <li>the Planner may decide any pending transfer on a region's behalf (escalation).</li>
  * </ul>
  * The Drools transfer rules are checked when the transfer is created <em>and again</em> when it is
@@ -79,12 +80,27 @@ public class TransferService {
      */
     @Transactional
     public Outcome create(UUID cycleId, UUID productId, String fromRegion, String toRegion, int qty, String reason, CurrentUser user) {
+        return create(cycleId, productId, fromRegion, toRegion, qty, reason, user, false);
+    }
+
+    /**
+     * Same as {@link #create(UUID, UUID, String, String, int, String, CurrentUser)}, with the option to move the units at
+     * once. A manager of either region can do this: for example North's manager adds units to North and reduces East
+     * without waiting for East. The transfer rules still apply (the total is unchanged, no region goes below zero or
+     * below the donor floor), it is audited, and the other region's manager gets a notification saying what changed.
+     *
+     * @param moveNow true to apply the move immediately instead of asking the other region to accept
+     * @throws ApiException as for the shorter overload
+     */
+    @Transactional
+    public Outcome create(UUID cycleId, UUID productId, String fromRegion, String toRegion, int qty, String reason, CurrentUser user, boolean moveNow) {
         String from = fromRegion.toUpperCase(Locale.ROOT), to = toRegion.toUpperCase(Locale.ROOT);
         requireState(cycleId);
         boolean ownsFrom = user.has("regional_manager") && user.inRegion(from);
         boolean ownsTo = user.has("regional_manager") && user.inRegion(to);
         if (!ownsFrom && !ownsTo) throw new ApiException(HttpStatus.FORBIDDEN, "REGION_FORBIDDEN", "You must manage the donor or the receiving region");
-        String kind = ownsFrom && ownsTo ? "DIRECT" : ownsTo ? "REQUEST" : "OFFER";
+        boolean direct = moveNow || (ownsFrom && ownsTo);
+        String kind = direct ? "DIRECT" : ownsTo ? "REQUEST" : "OFFER";
 
         List<Violation> found = check(cycleId, productId, from, to, qty);
         refuseOnError(found);
@@ -98,7 +114,13 @@ public class TransferService {
         audit.record(user.username(), "TRANSFER_" + kind, "transfer_request", id.toString(), Map.of("from", from, "to", to, "qty", qty, "productId", productId.toString()));
 
         if ("DIRECT".equals(kind)) {
-            apply(cycleId, id, user, "direct rebalance between own regions");
+            apply(cycleId, id, user, ownsFrom && ownsTo ? "direct rebalance between own regions" : "moved directly by " + user.username());
+            if (!(ownsFrom && ownsTo)) {
+                // The region the manager does not manage is told, so nobody is surprised by a changed number.
+                String other = ownsTo ? from : to;
+                notifications.notifyRole("regional_manager", other, "Allocation changed: " + productName(productId),
+                    user.username() + " moved " + qty + " units " + from + " -> " + to + "." + (reason == null || reason.isBlank() ? "" : " Reason: " + reason), cycleId);
+            }
         } else {
             // Tell the region that has to decide.
             String decider = "REQUEST".equals(kind) ? from : to;

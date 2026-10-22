@@ -366,7 +366,7 @@ export function createApi(token: string) {
     /** Transfers of a cycle, newest first. */
     transfers: (id: string, status?: string) => json<TransferRow[]>(`/cycles/${id}/transfers${status ? `?status=${status}` : ''}`),
     /** Requests, offers or (owning both regions) directly applies a transfer. */
-    createTransfer: (id: string, body: { productId: string; fromRegion: string; toRegion: string; qty: number; reason?: string }) =>
+    createTransfer: (id: string, body: { productId: string; fromRegion: string; toRegion: string; qty: number; reason?: string; moveNow?: boolean }) =>
       json<{ transfer: TransferRow; warnings: string[] }>(`/cycles/${id}/transfers`, send('POST', body)),
     /** Accepts a pending transfer (the units move). */
     acceptTransfer: (tid: string, comment?: string) => json<{ transfer: TransferRow; warnings: string[] }>(`/transfers/${tid}/accept`, send('POST', { comment: comment ?? null })),

@@ -105,6 +105,23 @@ class FinalizationFlowTest {
         assertThatThrownBy(() -> transfers.accept(id, null, E)).isInstanceOfSatisfying(ApiException.class, e -> assertThat(e.getCode()).isEqualTo("NOT_PENDING"));
         assertThat(jdbc.sql("SELECT COUNT(*) FROM change_log WHERE cycle_id = :c AND field = 'FINAL' AND reason LIKE :r").param("c", c).param("r", "transfer " + id + "%")
             .query(Long.class).single()).isEqualTo(2);
+
+        // "Move now": North's manager adds 3 units to North and reduces East at once, without East accepting.
+        var now = transfers.create(c, modelA, "EAST", "NORTH", 3, "walk-in order", N, true);
+        assertThat(now.transfer().kind()).isEqualTo("DIRECT");
+        assertThat(now.transfer().status()).isEqualTo("ACCEPTED");
+        assertThat(finals(c, modelA)).containsExactly(33, 17, 25, 25);
+        assertThat(finals(c, modelA).stream().mapToInt(Integer::intValue).sum()).isEqualTo(100);
+        // East's manager is told; the rules still bind (East cannot give more than it has).
+        assertThat(jdbc.sql("SELECT COUNT(*) FROM notification WHERE cycle_id = :c AND target_region = 'EAST' AND title LIKE 'Allocation changed:%'")
+            .param("c", c).query(Long.class).single()).isEqualTo(1);
+        assertThatThrownBy(() -> transfers.create(c, modelA, "EAST", "NORTH", 18, null, N, true)).isInstanceOf(ApiException.class);
+        // A manager of neither region cannot move units at all.
+        assertThatThrownBy(() -> transfers.create(c, modelA, "EAST", "NORTH", 1, null, W, true))
+            .isInstanceOfSatisfying(ApiException.class, e -> assertThat(e.getStatus().value()).isEqualTo(403));
+        // Put the 3 units back (North reduces itself, East adds), so the tests that follow start from 30/20/25/25.
+        transfers.create(c, modelA, "NORTH", "EAST", 3, "undo", N, true);
+        assertThat(finals(c, modelA)).containsExactly(30, 20, 25, 25);
     }
 
     /** The transfer rules refuse what the donor cannot spare, and touching a finalized region (BR-TR-01, BR-TR-03). */

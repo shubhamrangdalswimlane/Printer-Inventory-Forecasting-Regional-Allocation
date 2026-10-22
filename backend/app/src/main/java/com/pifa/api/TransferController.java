@@ -29,7 +29,7 @@ public class TransferController {
      * @param qty        units to move
      * @param reason     why
      */
-    public record CreateRequest(UUID productId, String fromRegion, String toRegion, int qty, String reason) {}
+    public record CreateRequest(UUID productId, String fromRegion, String toRegion, int qty, String reason, Boolean moveNow) {}
 
     /** @param comment optional comment on a decision */
     public record DecisionRequest(String comment) {}
@@ -48,10 +48,10 @@ public class TransferController {
         return transfers.list(id, status);
     }
 
-    /** {@code POST /cycles/{id}/transfers} - request, offer, or (owning both regions) rebalance directly. */
+    /** {@code POST /cycles/{id}/transfers} - request, offer, or (owning both regions, or with {@code moveNow=true}) move units at once. */
     @PostMapping("/cycles/{id}/transfers")
     public TransferService.Outcome create(@PathVariable UUID id, @RequestBody CreateRequest body, Authentication auth) {
-        return transfers.create(id, body.productId(), body.fromRegion(), body.toRegion(), body.qty(), body.reason(), CurrentUser.from(auth));
+        return transfers.create(id, body.productId(), body.fromRegion(), body.toRegion(), body.qty(), body.reason(), CurrentUser.from(auth), Boolean.TRUE.equals(body.moveNow()));
     }
 
     /** {@code POST /transfers/{id}/accept} - the deciding region (or the Planner) accepts; the units move. */

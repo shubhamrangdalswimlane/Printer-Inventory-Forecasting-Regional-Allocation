@@ -60,13 +60,25 @@ export default function TransferPanel(props: { api: Api; cycleId: string; perms:
           </select>{' '}
           <input className="narrow" aria-label="Units to move" type="number" min={1} value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} /> units{' '}
           <input aria-label="Reason for the transfer" placeholder="reason" value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} />{' '}
-          <button disabled={!form.productId || !form.fromRegion || !form.toRegion}
+          {/* Move now: change the allocation at once (add to / reduce a region). Request or Offer: the other region must agree first. */}
+          <button className="primary" disabled={!form.productId || !form.fromRegion || !form.toRegion || form.fromRegion === form.toRegion || !(myRegions.includes(form.fromRegion) || myRegions.includes(form.toRegion))}
+            title="Change the allocation immediately; the other region's manager is notified"
             onClick={() => act(async () => {
-              const r = await api.createTransfer(cycleId, { productId: form.productId, fromRegion: form.fromRegion, toRegion: form.toRegion, qty: Number(form.qty), reason: form.reason || undefined })
-              return (r.transfer.kind === 'DIRECT' ? 'Moved directly between your regions.' : `Sent as ${r.transfer.kind.toLowerCase()}; waiting for the other region.`) + (r.warnings.length ? ' Warning: ' + r.warnings.join('; ') : '')
+              const r = await api.createTransfer(cycleId, { productId: form.productId, fromRegion: form.fromRegion, toRegion: form.toRegion, qty: Number(form.qty), reason: form.reason || undefined, moveNow: true })
+              return `Moved ${form.qty} units ${form.fromRegion} → ${form.toRegion}. The other region's manager was notified.` + (r.warnings.length ? ' Warning: ' + r.warnings.join('; ') : '')
             })}>
-            {myRegions.includes(form.fromRegion) && myRegions.includes(form.toRegion) ? 'Move' : myRegions.includes(form.toRegion) ? 'Request' : 'Offer'}
+            Move now
           </button>
+          {!(myRegions.includes(form.fromRegion) && myRegions.includes(form.toRegion)) && (
+            <button disabled={!form.productId || !form.fromRegion || !form.toRegion}
+              title="The other region's manager must accept before anything changes"
+              onClick={() => act(async () => {
+                const r = await api.createTransfer(cycleId, { productId: form.productId, fromRegion: form.fromRegion, toRegion: form.toRegion, qty: Number(form.qty), reason: form.reason || undefined })
+                return `Sent as ${r.transfer.kind.toLowerCase()}; waiting for the other region.` + (r.warnings.length ? ' Warning: ' + r.warnings.join('; ') : '')
+              })}>
+              {myRegions.includes(form.toRegion) ? 'Request' : 'Offer'}
+            </button>
+          )}
           {selected && (
             <p className="muted">Current {selected.product}: {Object.entries(selected.regions).map(([r, c]) => `${r} ${c.finalQty ?? c.approved ?? 0}/${c.demand}`).join(' · ')} (allocation/demand)</p>
           )}
