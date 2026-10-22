@@ -1,0 +1,16 @@
+# .dockerignore - keeps the Docker build context small and the image build reproducible.
+# Build outputs and downloaded dependencies are recreated inside the build, so stale local copies must never leak in
+# (for example an old backend/app/target jar next to the freshly built one).
+**/target/
+**/node_modules/
+**/dist/
+e2e/test-results/
+e2e/playwright-report/
+.git/
+.github/
+data_synthetic/
+docs/
+infra/
+loadtest/
+**/*.log
+**/.jqwik-database

@@ -125,9 +125,13 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0                 # log in to GitHub Container Registry with the built-in token
         with: { registry: ghcr.io, username: '${{ github.actor }}', password: '${{ secrets.GITHUB_TOKEN }}' }
+      # Docker image names must be lowercase, but the repository name (owner/Repo-Name) may not be. Actions has no
+      # lower-case function, so the name is lower-cased in the shell (${VAR,,}) and passed on as an environment variable.
+      - name: Image name (lower-case)
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/pifa-api" >> "$GITHUB_ENV"
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .                                  # repository root (the Dockerfile copies backend/ and rules/)
           file: backend/Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository }}/pifa-api:${{ github.sha }}   # tagged with the commit id
+          tags: ${{ env.IMAGE }}:${{ github.sha }}   # tagged with the commit id
