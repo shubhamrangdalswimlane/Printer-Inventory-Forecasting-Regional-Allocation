@@ -113,10 +113,10 @@ export default function AllocationGrid(props: {
       <p>
         <input aria-label="Search product" placeholder="Search product…" value={search} onChange={(e) => { setPage(0); setSearch(e.target.value) }} />{' '}
         <label className="check"><input type="checkbox" checked={onlyConstrained} onChange={(e) => { setPage(0); setOnlyConstrained(e.target.checked) }} /> constrained only</label>
-        {Object.keys(pending).length > 0 && <><button onClick={save}>Save {Object.keys(pending).length} change(s)</button><button onClick={() => setPending({})}>Discard</button></>}
+        {Object.keys(pending).length > 0 && <><button className="primary" onClick={save}>Save {Object.keys(pending).length} change(s)</button><button onClick={() => setPending({})}>Discard</button></>}
       </p>
       {message && <p className={message.kind === 'ok' ? 'ok' : 'error'}>{message.text}</p>}
-      <div className="grid-scroll">
+      <div className="grid-scroll" tabIndex={0} role="region" aria-label="Allocation table">
         <table className="grid">
           <thead>
             <tr>

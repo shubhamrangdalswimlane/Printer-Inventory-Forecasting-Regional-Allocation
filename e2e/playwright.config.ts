@@ -26,7 +26,12 @@ export default defineConfig({
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  // E2E_MAP_LOCALHOST_TO (e.g. host.docker.internal): the browser resolves "localhost" to that host, so a test
+  // container can drive an app stack published on the host's localhost ports (app, Keycloak) as a real browser would.
+  projects: [{
+    name: 'chromium',
+    use: { ...devices['Desktop Chrome'], launchOptions: { args: process.env.E2E_MAP_LOCALHOST_TO ? [`--host-resolver-rules=MAP localhost ${process.env.E2E_MAP_LOCALHOST_TO}`] : [] } },
+  }],
   // Started before the tests and stopped after them; only in container mode.
   webServer: proxyTarget ? { command: 'node scripts/localhost-proxy.mjs', url: baseURL, reuseExistingServer: false, timeout: 60_000 } : undefined,
 })

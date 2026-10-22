@@ -294,7 +294,7 @@ export function CyclesTab({ api, cycle }: { api: Api; cycle: CycleState }) {
     <section className="card">
       <h3>Cycles</h3>
       <p><input placeholder="YYYY-MM" value={month} onChange={(e) => setMonth(e.target.value)} />{' '}
-        <button disabled={!month} onClick={() => act(() => api.createCycle(month, iso(review), iso(fin)), `Cycle ${month} created`)}>Create cycle</button></p>
+        <button className="primary" disabled={!month} onClick={() => act(() => api.createCycle(month, iso(review), iso(fin)), `Cycle ${month} created`)}>Create cycle</button></p>
       {cycle.detail && (
         <>
           <h4>{cycle.detail.cycle.month} ({cycle.detail.cycle.state})</h4>

@@ -48,18 +48,18 @@ export default function TransferPanel(props: { api: Api; cycleId: string; perms:
       <h3>Transfers</h3>
       {perms?.canCreateTransfer && (
         <div className="transfer-form">
-          <select value={form.productId} onChange={(e) => setForm({ ...form, productId: e.target.value })}>
+          <select aria-label="Product" value={form.productId} onChange={(e) => setForm({ ...form, productId: e.target.value })}>
             <option value="">Product…</option>
             {products.map((p) => <option key={p.productId} value={p.productId}>{p.product}</option>)}
           </select>{' '}
-          from <select value={form.fromRegion} onChange={(e) => setForm({ ...form, fromRegion: e.target.value })}>
+          from <select aria-label="From region" value={form.fromRegion} onChange={(e) => setForm({ ...form, fromRegion: e.target.value })}>
             <option value="">…</option>{['NORTH', 'EAST', 'WEST', 'SOUTH'].map((r) => <option key={r}>{r}</option>)}
           </select>{' '}
-          to <select value={form.toRegion} onChange={(e) => setForm({ ...form, toRegion: e.target.value })}>
+          to <select aria-label="To region" value={form.toRegion} onChange={(e) => setForm({ ...form, toRegion: e.target.value })}>
             <option value="">…</option>{['NORTH', 'EAST', 'WEST', 'SOUTH'].map((r) => <option key={r}>{r}</option>)}
           </select>{' '}
-          <input className="narrow" type="number" min={1} value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} /> units{' '}
-          <input placeholder="reason" value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} />{' '}
+          <input className="narrow" aria-label="Units to move" type="number" min={1} value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} /> units{' '}
+          <input aria-label="Reason for the transfer" placeholder="reason" value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} />{' '}
           <button disabled={!form.productId || !form.fromRegion || !form.toRegion}
             onClick={() => act(async () => {
               const r = await api.createTransfer(cycleId, { productId: form.productId, fromRegion: form.fromRegion, toRegion: form.toRegion, qty: Number(form.qty), reason: form.reason || undefined })
@@ -77,7 +77,7 @@ export default function TransferPanel(props: { api: Api; cycleId: string; perms:
       <h4>{perms?.canDecideAnyTransfer ? 'Pending transfers (you can decide on a region\'s behalf)' : 'Waiting for your decision'} ({perms?.canDecideAnyTransfer ? pending.length : inbox.length})</h4>
       <TransferTable rows={perms?.canDecideAnyTransfer ? pending : inbox} actions={(t) => (
         <>
-          <button onClick={() => act(async () => { const r = await api.acceptTransfer(t.id); return 'Accepted.' + (r.warnings.length ? ' Warning: ' + r.warnings.join('; ') : '') })}>Accept</button>
+          <button className="primary" onClick={() => act(async () => { const r = await api.acceptTransfer(t.id); return 'Accepted.' + (r.warnings.length ? ' Warning: ' + r.warnings.join('; ') : '') })}>Accept</button>
           <button onClick={() => { const why = window.prompt('Reason for rejecting (optional):') ?? undefined; act(async () => { await api.rejectTransfer(t.id, why); return 'Rejected.' }) }}>Reject</button>
         </>
       )} />

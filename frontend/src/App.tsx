@@ -173,9 +173,14 @@ export default function App() {
   if (!auth.isAuthenticated) {
     return (
       <main>
-        <h1>PIFA</h1>
-        {/* Starts the redirect to the Keycloak login page. */}
-        <button onClick={() => auth.signinRedirect()}>Sign in</button>
+        <div className="welcome">
+          <div className="logo-big" aria-hidden="true">P</div>
+          <h1>PIFA</h1>
+          <p>Printer Inventory Forecasting &amp; Regional Allocation: one place to forecast, review, allocate and finalize every month.</p>
+          {/* Starts the redirect to the Keycloak login page. */}
+          <button className="primary" onClick={() => auth.signinRedirect()}>Sign in</button>
+          <div className="roles" aria-label="Dashboards"><span>Forecaster</span><span>Regional Manager</span><span>Planner</span><span>Admin</span></div>
+        </div>
       </main>
     )
   }
@@ -185,8 +190,14 @@ export default function App() {
   return (
     <main>
       <header>
-        <h1>PIFA</h1>
-        <span>{me.username} ({me.roles.join(', ')})</span>
+        <div className="brand">
+          <div className="logo" aria-hidden="true">P</div>
+          <h1>PIFA<span className="tagline">Inventory forecasting &amp; regional allocation</span></h1>
+        </div>
+        <div className="user">
+          <div className="avatar" aria-hidden="true">{me.username.slice(0, 1)}</div>
+          <div className="who"><span>{me.username} ({me.roles.join(', ')})</span><small>{me.roles.map((r) => r.replace('_', ' ')).join(', ')}</small></div>
+        </div>
         <NotificationBell api={api} />
         {/* Ends the Keycloak session and returns to the app. */}
         <button onClick={() => auth.signoutRedirect()}>Sign out</button>

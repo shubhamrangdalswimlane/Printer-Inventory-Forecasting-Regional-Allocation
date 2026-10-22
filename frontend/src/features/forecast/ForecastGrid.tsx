@@ -131,7 +131,7 @@ export default function ForecastGrid(props: {
       <h3>Forecast {mode === 'forecaster' ? '(published quantity — editable in draft)' : mode === 'regional' ? '(revise your region)' : '(read-only)'}</h3>
       <p>
         <input aria-label="Search product" placeholder="Search product…" value={search} onChange={(e) => { setPage(0); setSearch(e.target.value) }} />{' '}
-        {pendingCount > 0 && <button onClick={save} disabled={saving}>Save {pendingCount} change(s)</button>}{' '}
+        {pendingCount > 0 && <button className="primary" onClick={save} disabled={saving}>Save {pendingCount} change(s)</button>}{' '}
         {pendingCount > 0 && <button onClick={() => setPending({})}>Discard</button>}
         {mode === 'regional' && editableRevised.size > 0 && (
           <span className="bulk"> Bulk: <input className="narrow" aria-label="Bulk change in percent" value={bulkPct} onChange={(e) => setBulkPct(e.target.value)} />% on selected rows
@@ -140,7 +140,7 @@ export default function ForecastGrid(props: {
         )}
       </p>
       {message && <p className={message.kind === 'ok' ? 'ok' : 'error'}>{message.text}</p>}
-      <div className="grid-scroll">
+      <div className="grid-scroll" tabIndex={0} role="region" aria-label="Forecast table">
         <table className="grid">
           <thead>
             <tr>

@@ -55,7 +55,7 @@ export default function AllocationActions({ api, cycleId, perms, refreshKey, onD
       {planning && perms.canRunAllocation && (
         <p>
           <button disabled={busy} onClick={() => act(async () => { const p = await api.previewAllocation(cycleId, basis || undefined); setPreview(p); return `Preview: ${p.changedCells} cell(s) would change.` })}>Preview run</button>
-          <button disabled={busy} onClick={() => window.confirm('Run the allocation? It replaces the current approved numbers, including your edits.') &&
+          <button className="primary" disabled={busy} onClick={() => window.confirm('Run the allocation? It replaces the current approved numbers, including your edits.') &&
             act(async () => { const p = await api.runAllocation(cycleId, basis || undefined); setPreview(null); onDone(); return `Allocated ${p.products} products (${p.constrained} constrained) with rules ${p.rulesetVersion}, parameters v${p.parameterVersion}.` })}>
             Run allocation
           </button>
@@ -79,7 +79,7 @@ export default function AllocationActions({ api, cycleId, perms, refreshKey, onD
         <p>
           <input aria-label="Approval comment" placeholder="Approval comment" value={comment} onChange={(e) => setComment(e.target.value)} />{' '}
           <label>Finalize by <input type="datetime-local" value={deadline} onChange={(e) => setDeadline(e.target.value)} /></label>{' '}
-          <button disabled={busy || errors.length > 0} title={errors.length > 0 ? 'Fix the blocking errors first' : ''}
+          <button className="primary" disabled={busy || errors.length > 0} title={errors.length > 0 ? 'Fix the blocking errors first' : ''}
             onClick={() => act(async () => { await api.transition(cycleId, { action: 'APPROVE_ALLOCATION', comment: comment || undefined, finalizeDeadline: deadline ? new Date(deadline).toISOString() : undefined }); onDone(); return 'Approved. Regional Managers can now finalize.' })}>
             Approve allocation
           </button>

@@ -40,7 +40,7 @@ export default function ForecasterActions({ api, cycleId, perms, onDone }: { api
         </>
       )}
       <input aria-label="Comment" placeholder="Comment" value={comment} onChange={(e) => setComment(e.target.value)} />{' '}
-      {perms.canPublish && <button onClick={() => run('PUBLISH')}>Approve &amp; publish</button>}
+      {perms.canPublish && <button className="primary" onClick={() => run('PUBLISH')}>Approve &amp; publish</button>}
       {perms.canRecall && <button onClick={() => window.confirm('Recall the forecast to draft? Regional edits will be cleared.') && run('RECALL')}>Recall</button>}
       {message && <p className={message.kind === 'ok' ? 'ok' : 'error'}>{message.text}</p>}
     </section>

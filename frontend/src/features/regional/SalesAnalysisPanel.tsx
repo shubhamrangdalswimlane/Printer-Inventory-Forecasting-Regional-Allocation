@@ -37,7 +37,7 @@ export default function SalesAnalysisPanel({ api, cycleId, regions, refreshKey }
         <p><label>Region{' '}<select value={region} onChange={(e) => setRegion(e.target.value)}>{regions.map((r) => <option key={r}>{r}</option>)}</select></label></p>
       )}
       {error && <p className="error">{error}</p>}
-      <div className="grid-scroll">
+      <div className="grid-scroll" tabIndex={0} role="region" aria-label="Sales analysis table">
         <table className="grid">
           <thead><tr><th className="sticky">Product</th><th>Avg 3m</th><th>Avg 6m</th><th>Avg 12m</th><th>Avg 24m</th><th>Same month LY</th><th>Trend (12m)</th><th>Published</th><th>Revised</th></tr></thead>
           <tbody>

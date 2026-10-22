@@ -54,7 +54,7 @@ export default function RegionalActions({ api, cycleId, detail, perms, regions, 
         <p key={r.region}>
           <b>{r.region}</b>: {r.reviewStatus === 'OPEN'
             ? <>review the forecast{detail.cycle.reviewDeadline ? <> by <b>{new Date(detail.cycle.reviewDeadline).toLocaleString()}</b></> : ''}, then{' '}
-                <button disabled={!perms.submittableRegions.includes(r.region)} onClick={() => window.confirm(`Submit ${r.region}? You will not be able to edit it afterwards unless the Planner returns it.`) && submit(r.region)}>Submit {r.region}</button></>
+                <button className="primary" disabled={!perms.submittableRegions.includes(r.region)} onClick={() => window.confirm(`Submit ${r.region}? You will not be able to edit it afterwards unless the Planner returns it.`) && submit(r.region)}>Submit {r.region}</button></>
             : <span className="ok">submitted{r.actor ? ` by ${r.actor}` : ''} ✓</span>}
         </p>
       ))}
@@ -64,7 +64,7 @@ export default function RegionalActions({ api, cycleId, detail, perms, regions, 
           <b>{r.region}</b>: {r.finalizeStatus === 'FINALIZED'
             ? <><span className="ok">finalized ✓</span> <button onClick={() => run('UNFINALIZE_REGION', r.region, `${r.region} reopened for changes.`)}>Un-finalize</button></>
             : <>review the allocation, agree any transfers, then{' '}
-                <button disabled={!perms.finalizableRegions.includes(r.region)} onClick={() => window.confirm(`Finalize ${r.region}? Pending transfers must be settled first.`) && run('FINALIZE_REGION', r.region, `${r.region} finalized.`)}>Finalize {r.region}</button>
+                <button className="primary" disabled={!perms.finalizableRegions.includes(r.region)} onClick={() => window.confirm(`Finalize ${r.region}? Pending transfers must be settled first.`) && run('FINALIZE_REGION', r.region, `${r.region} finalized.`)}>Finalize {r.region}</button>
                 {detail.cycle.finalizeDeadline && <span className="muted"> (deadline {new Date(detail.cycle.finalizeDeadline).toLocaleString()})</span>}</>}
           {' '}<button className="link" onClick={() => api.exportAllocation(cycleId, 'final', r.region).catch((e) => setMessage({ kind: 'error', text: e.message }))}>Download {r.region} (xlsx)</button>
         </p>
